@@ -1,0 +1,26 @@
+# 构建上下文排除项（保证镜像精简且不含任何密钥/本地数据）
+node_modules
+.next
+.git
+.gitignore
+npm-debug.log
+Dockerfile
+docker-compose.yml
+.env
+.env.local
+data
+prisma/data
+backups
+.npm-cache
+.acl-recovery
+.e2e-artifacts
+.run
+dist
+.tools
+*.db
+*.db-journal
+*.log
+*.tar
+*.tar.gz
+*.zip
+README.md

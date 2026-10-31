@@ -1,0 +1,235 @@
+// Prisma schema —— 排班系统
+//
+// 数据库切换说明（Prisma 不允许 provider 使用 env()，因此 provider 是硬编码的）：
+//   本地默认： provider = "sqlite"      + DATABASE_URL="file:./data/app.db"
+//   云服务器： provider = "postgresql"  + DATABASE_URL="postgresql://..."
+// 使用 npm run db:switch:postgres / npm run db:switch:sqlite 一键切换，
+// 两个 provider 的迁移目录互相独立：prisma/migrations (sqlite) 与 prisma/migrations-postgresql。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// 管理员账号
+model Admin {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  passwordHash String
+  displayName  String?
+  /// active | disabled
+  status       String   @default("active")
+  isSuper      Boolean  @default(false)
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  auditLogs AuditLog[]
+
+  @@map("admins")
+}
+
+/// 排班任务
+model Task {
+  id          String @id @default(uuid())
+  name        String
+  description String?
+  dateStart   String // yyyy-MM-dd
+  dateEnd     String // yyyy-MM-dd
+  /// 填写截止时间
+  fillDeadline DateTime?
+
+  /// 填写密码哈希（可重置）
+  fillPasswordHash String
+  /// 填写链接 UUID，不可枚举
+  publicToken      String   @unique @default(uuid())
+  /// draft | published | confirmed(已截止确认) | matched(已匹配)
+  status           String   @default("draft")
+  /// 允许同一用户同日多班（仅当班次时间完全不重叠时生效）
+  allowSameDayMultiple Boolean @default(false)
+  /// 匹配随机种子
+  matchSeed        Int?
+  /// 最近一次匹配是否全部满足
+  matchFeasible    Boolean?
+  matchSummary     String?
+  lastMatchedAt    DateTime?
+  confirmedAt      DateTime?
+  confirmedBy      String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  shifts       Shift[]
+  requirements TaskDayRequirement[]
+  roster       RosterEntry[]
+  submissions  Submission[]
+  selections   Selection[]
+  assignments  Assignment[]
+  auditLogs    AuditLog[]
+
+  @@map("tasks")
+}
+
+/// 班次定义（属于某个任务）
+model Shift {
+  id         String  @id @default(uuid())
+  taskId     String
+  name       String
+  startTime  String // HH:mm
+  endTime    String // HH:mm
+  /// 默认所需人数
+  defaultHeadcount Int  @default(1)
+  sortOrder  Int     @default(0)
+  colorKey   String? // 展示用（纯色，不使用渐变/透明度）
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  task         Task                  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  requirements TaskDayRequirement[]
+  selections   Selection[]
+  assignments  Assignment[]
+
+  @@unique([taskId, name])
+  @@index([taskId])
+  @@map("shifts")
+}
+
+/// 按天、按班次的需求人数
+model TaskDayRequirement {
+  id        String @id @default(uuid())
+  taskId    String
+  shiftId   String
+  /// yyyy-MM-dd
+  date      String
+  headcount Int    @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  task  Task  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  shift Shift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, shiftId, date])
+  @@index([taskId, date])
+  @@map("task_day_requirements")
+}
+
+/// 上传的名单（用于核对已填/未填）
+model RosterEntry {
+  id      String  @id @default(uuid())
+  taskId  String
+  name    String
+  empNo   String?
+  dept    String?
+  /// 归一化后的姓名，用于匹配
+  nameKey String
+
+  createdAt DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, nameKey])
+  @@map("roster_entries")
+}
+
+/// 用户提交
+model Submission {
+  id           String @id @default(uuid())
+  taskId       String
+  /// 姓名（展示用，保留用户输入）
+  name         String
+  /// 归一化姓名，同一任务内唯一，用于“同名再进入修改”
+  nameKey      String
+  empNo        String?
+  dept         String?
+  /// 是否来自名单
+  onRoster     Boolean @default(false)
+  /// submitted | locked
+  status       String  @default("submitted")
+  ipAddress    String?
+  userAgent    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  task       Task        @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  selections Selection[]
+
+  @@unique([taskId, nameKey])
+  @@index([taskId])
+  @@map("submissions")
+}
+
+/// 用户对“日期+班次”的意愿：preferred(首选) | backup(次选) | unavailable(无法)
+model Selection {
+  id           String @id @default(uuid())
+  submissionId String
+  taskId       String
+  shiftId      String
+  date         String // yyyy-MM-dd
+  /// preferred | backup | unavailable
+  choice       String
+  reason       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  task       Task       @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  shift      Shift      @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, shiftId, date])
+  @@index([taskId, date])
+  @@map("selections")
+}
+
+/// 最终排班结果
+model Assignment {
+  id           String @id @default(uuid())
+  taskId       String
+  shiftId      String
+  date         String // yyyy-MM-dd
+  submissionId String
+  name         String
+  /// preferred | backup | manual（管理员手动指定且该人员未选择首选/次选）
+  source       String
+  /// 匹配批次，便于重新匹配时整体替换；手动调整的记录为 "manual"
+  batchId      String
+  seed         Int
+  /// 历史排班次数（用于公平规则复现）
+  historyCount Int    @default(0)
+  /// 是否由管理员手动加入/调整（自动匹配为 false）
+  manual       Boolean @default(false)
+  /// 手动调整说明（调整人、原因等）
+  note         String?
+
+  createdAt DateTime @default(now())
+
+  task  Task  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  shift Shift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, date])
+  @@index([taskId, batchId])
+  @@map("assignments")
+}
+
+/// 管理员操作日志
+model AuditLog {
+  id        String   @id @default(uuid())
+  adminId   String?
+  taskId    String?
+  action    String
+  detail    String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  admin Admin? @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  task  Task?  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@map("audit_logs")
+}

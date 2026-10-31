@@ -1,0 +1,89 @@
+# =============================================================================
+# 排班系统 · Docker Compose
+#
+# 一、本地一键启动（默认 SQLite，零外部依赖）：
+#     cp .env.example .env   # 修改 SESSION_SECRET / INITIAL_ADMIN_*
+#     docker compose up -d --build
+#     访问 http://localhost:3000/admin/login
+#
+# 二、云服务器使用 PostgreSQL：
+#     docker compose --profile postgres up -d --build
+#     （app 服务会自动切换到 postgresql provider；迁移目录为 prisma/migrations-postgresql）
+#
+# 说明：profiles 里的服务仅在显式指定 --profile 时启动，默认不影响本地 SQLite 启动。
+# =============================================================================
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        DATABASE_PROVIDER: ${DATABASE_PROVIDER:-sqlite}
+    image: scheduling-system:latest
+    container_name: scheduling-app
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_PROVIDER: "${DATABASE_PROVIDER:-sqlite}"
+      # SQLite 默认写入容器内 /app/prisma/data（映射到命名卷，重建容器不丢数据）
+      # PostgreSQL 模式请在 .env 中设置：
+      #   DATABASE_PROVIDER=postgresql
+      #   DATABASE_URL=postgresql://sched:change-me@db:5432/scheduling?schema=public
+      DATABASE_URL: "${DATABASE_URL:-file:/app/prisma/data/app.db}"
+      SESSION_SECRET: "${SESSION_SECRET:?请先在 .env 中设置 SESSION_SECRET}"
+      SESSION_TTL_HOURS: "${SESSION_TTL_HOURS:-12}"
+      FILL_SESSION_TTL_HOURS: "${FILL_SESSION_TTL_HOURS:-12}"
+      INITIAL_ADMIN_USERNAME: "${INITIAL_ADMIN_USERNAME:-admin}"
+      INITIAL_ADMIN_PASSWORD: "${INITIAL_ADMIN_PASSWORD:-Admin@12345}"
+      INITIAL_ADMIN_DISPLAY_NAME: "${INITIAL_ADMIN_DISPLAY_NAME:-系统管理员}"
+      BASE_URL: "${BASE_URL:-http://localhost:3000}"
+      COOKIE_SECURE: "${COOKIE_SECURE:-false}"
+      FILL_RATE_LIMIT_MAX: "${FILL_RATE_LIMIT_MAX:-30}"
+      FILL_RATE_LIMIT_WINDOW: "${FILL_RATE_LIMIT_WINDOW:-60}"
+      FILL_PASSWORD_MAX_ATTEMPTS: "${FILL_PASSWORD_MAX_ATTEMPTS:-10}"
+      FILL_PASSWORD_WINDOW: "${FILL_PASSWORD_WINDOW:-300}"
+      TZ: "${TZ:-Asia/Shanghai}"
+    volumes:
+      - app-data:/app/prisma/data
+      - app-backups:/app/backups
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      db:
+        condition: service_healthy
+        required: false
+
+  db:
+    image: postgres:16-alpine
+    container_name: scheduling-db
+    profiles: ["postgres"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-sched}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-change-me}"
+      POSTGRES_DB: "${POSTGRES_DB:-scheduling}"
+      TZ: "${TZ:-Asia/Shanghai}"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - db-backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sched} -d ${POSTGRES_DB:-scheduling}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # 生产环境建议不要对公网暴露数据库端口；如需本机调试再打开：
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+
+volumes:
+  app-data:
+  app-backups:
+  db-data:
+  db-backups:

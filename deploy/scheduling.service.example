@@ -1,0 +1,47 @@
+# =============================================================================
+# systemd 服务单元示例（不使用 Docker，直接在云服务器上用 Node 运行）
+# 放置位置：/etc/systemd/system/scheduling.service
+# 使用：
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now scheduling
+#   sudo journalctl -u scheduling -f
+# =============================================================================
+
+[Unit]
+Description=Scheduling System (Next.js)
+Documentation=file:/opt/scheduling/README.md
+After=network.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=scheduling
+Group=scheduling
+WorkingDirectory=/opt/scheduling
+
+# 环境变量文件（包含 DATABASE_URL、SESSION_SECRET、INITIAL_ADMIN_* 等）
+EnvironmentFile=/opt/scheduling/.env
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=127.0.0.1
+
+# 启动前执行数据库迁移（幂等）
+ExecStartPre=/usr/bin/env npx prisma migrate deploy --schema prisma/schema.prisma
+ExecStart=/usr/bin/node node_modules/next/dist/bin/next start -p 3000 -H 127.0.0.1
+
+Restart=always
+RestartSec=5
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=scheduling
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/scheduling/prisma/data /opt/scheduling/backups
+
+[Install]
+WantedBy=multi-user.target

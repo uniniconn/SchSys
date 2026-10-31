@@ -1,0 +1,103 @@
+# =============================================================================
+# Nginx 反向代理示例（排班系统）
+# 放置位置：/etc/nginx/sites-available/scheduling
+# 启用：ln -s /etc/nginx/sites-available/scheduling /etc/nginx/sites-enabled/scheduling
+#       nginx -t && systemctl reload nginx
+#
+# 前置：先申请证书（任选其一）
+#   1) certbot --nginx -d your-domain.com      # 自动改写本文件，最简单的做法
+#   2) certbot certonly --webroot -w /var/www/certbot -d your-domain.com  # 手动模式，然后启用下方 443 段
+# 首次签发前请先只保留 80 端口段并确保 /.well-known/acme-challenge 可访问。
+# =============================================================================
+
+upstream scheduling_app {
+    server 127.0.0.1:3000;
+    keepalive 32;
+}
+
+# 填写端限流：每个 IP 每分钟最多 60 次请求（应用内还有一层更细的限流）
+limit_req_zone $binary_remote_addr zone=fill_limit:10m rate=60r/m;
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name your-domain.com;
+
+    # certbot webroot 校验目录
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    # 其余全部跳转 HTTPS（未配置证书时可先注释掉这一行，改为直接 proxy_pass）
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name your-domain.com;
+
+    ssl_certificate     /etc/letsencrypt/live/your-domain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # 安全响应头（应用自身也设置了部分响应头，这里作为兜底）
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    add_header Referrer-Policy same-origin always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # 上传名单文件大小限制（应用内限制 5MB）
+    client_max_body_size 8m;
+
+    gzip on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+
+    # 健康检查不写访问日志
+    location = /api/health {
+        access_log off;
+        proxy_pass http://scheduling_app;
+        include /etc/nginx/proxy_params_scheduling.conf;
+    }
+
+    # 填写端接口限流（防止恶意提交）
+    location ~ ^/api/fill/ {
+        limit_req zone=fill_limit burst=20 nodelay;
+        limit_req_status 429;
+        proxy_pass http://scheduling_app;
+        include /etc/nginx/proxy_params_scheduling.conf;
+    }
+
+    location / {
+        proxy_pass http://scheduling_app;
+        include /etc/nginx/proxy_params_scheduling.conf;
+    }
+}
+
+# -----------------------------------------------------------------------------
+# /etc/nginx/proxy_params_scheduling.conf 建议内容：
+#
+#   proxy_http_version 1.1;
+#   proxy_set_header Host              $host;
+#   proxy_set_header X-Real-IP         $remote_addr;
+#   proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+#   proxy_set_header X-Forwarded-Proto $scheme;
+#   proxy_set_header X-Forwarded-Host  $host;
+#   proxy_set_header Upgrade           $http_upgrade;
+#   proxy_set_header Connection        "upgrade";
+#   proxy_read_timeout                120s;
+#   proxy_send_timeout                120s;
+#   proxy_buffering                   off;
+#
+# 注意：应用通过 X-Forwarded-For 获取真实 IP 用于限流，
+#      因此务必保留以上 X-Real-IP / X-Forwarded-For 头。
+# -----------------------------------------------------------------------------
