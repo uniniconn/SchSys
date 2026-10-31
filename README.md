@@ -7,6 +7,8 @@
 - 本地默认 SQLite，云服务器可通过环境变量切换到 PostgreSQL
 - 提供 Dockerfile / docker-compose.yml，本地一键启动
 - 提供 Nginx 反向代理、HTTPS、数据库备份与恢复说明
+- 代码仓库：<https://github.com/uniniconn/SchSys>
+- 发布包（含 Docker 构建上下文、源码快照）：<https://github.com/uniniconn/SchSys/releases>
 
 ---
 
@@ -191,6 +193,9 @@ powershell ... -File scripts\package-docker.ps1 -ContextOnly   # 只生成构建
 | `…tar.sha256` | 镜像校验和 |
 | `scheduling-system-docker-context-<版本>.tar.gz` | 完整构建上下文（不含依赖/密钥/数据库），可拷到任意有 Docker 的机器 `docker build` |
 | `…manifest.json` | 上下文文件清单与校验和 |
+
+> 已随 GitHub Release 发布可直接下载的构建包：
+> <https://github.com/uniniconn/SchSys/releases/tag/v1.1.0>（`scheduling-system-docker-context-1.1.0.tar.gz`）。
 
 服务器上加载并运行：
 
