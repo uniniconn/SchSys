@@ -1,7 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import {
+  applyBulkChoice,
+  scopeKeys,
+  validateBulk,
+  type BulkScope,
+  type CellState as BulkCellState,
+} from '@/lib/bulk-selection';
 
 export type FillShift = { id: string; name: string; startTime: string; endTime: string; defaultHeadcount: number; sortOrder: number };
 export type FillCell = { date: string; shiftId: string; headcount: number };
@@ -50,6 +57,16 @@ export default function FillForm({
   const [pending, setPending] = useState(false);
   const [loadingExisting, setLoadingExisting] = useState(false);
   const [existingInfo, setExistingInfo] = useState<string | null>(null);
+  const [workloadPreference, setWorkloadPreference] = useState<'more' | 'normal' | 'less'>('normal');
+  const [maxAssignments, setMaxAssignments] = useState('');
+  const [bulkScope, setBulkScope] = useState<'all' | 'row' | 'column' | 'range'>('all');
+  const [bulkDate, setBulkDate] = useState('');
+  const [bulkShift, setBulkShift] = useState('');
+  const [bulkRangeStart, setBulkRangeStart] = useState('');
+  const [bulkRangeEnd, setBulkRangeEnd] = useState('');
+  const [bulkReason, setBulkReason] = useState('');
+  const undoStack = useRef<Array<Record<string, CellState>>>([]);
+  const [undoCount, setUndoCount] = useState(0);
 
   const storageKey = `sched-fill-${uuid}`;
 
@@ -97,6 +114,42 @@ export default function FillForm({
     });
   };
 
+  const buildScope = (): BulkScope => {
+    if (bulkScope === 'row') return { type: 'row', date: bulkDate };
+    if (bulkScope === 'column') return { type: 'column', shiftId: bulkShift };
+    if (bulkScope === 'range') return { type: 'range', dateStart: bulkRangeStart, dateEnd: bulkRangeEnd };
+    return { type: 'all' };
+  };
+
+  const applyBulk = (choice: Choice) => {
+    const scope = buildScope();
+    const keys = scopeKeys(cells, scope);
+    if (keys.length === 0) {
+      setMessage({ kind: 'error', text: '所选范围没有可设置的单元格，请检查日期/班次选择' });
+      return;
+    }
+    const invalid = validateBulk(choice, bulkReason);
+    if (invalid) {
+      setMessage({ kind: 'error', text: invalid });
+      return;
+    }
+    undoStack.current = [...undoStack.current.slice(-9), state];
+    setUndoCount(undoStack.current.length);
+    setState((current) => applyBulkChoice(current as Record<string, BulkCellState>, keys, choice, bulkReason));
+    setMessage({
+      kind: 'ok',
+      text: `已把 ${keys.length} 个单元格设置为「${choice === 'preferred' ? '首选' : choice === 'backup' ? '次选' : '无法'}」`,
+    });
+  };
+
+  const undoBulk = () => {
+    const previous = undoStack.current.pop();
+    if (!previous) return;
+    setState(previous);
+    setUndoCount(undoStack.current.length);
+    setMessage({ kind: 'ok', text: '已撤销上一次批量操作' });
+  };
+
   const loadExisting = useCallback(
     async (targetName: string) => {
       if (!targetName.trim()) return;
@@ -109,7 +162,13 @@ export default function FillForm({
         const data = (await response.json()) as {
           ok?: boolean;
           error?: string;
-          existing?: { name: string; updatedAt: string; selections: Array<{ date: string; shiftId: string; choice: string; reason: string | null }> } | null;
+          existing?: {
+            name: string;
+            updatedAt: string;
+            workloadPreference?: string;
+            maxAssignments?: number | null;
+            selections: Array<{ date: string; shiftId: string; choice: string; reason: string | null }>;
+          } | null;
         };
         if (!response.ok || !data.ok) {
           setMessage({ kind: 'error', text: data.error ?? '读取失败，请重新输入密码' });
@@ -132,6 +191,16 @@ export default function FillForm({
           return merged;
         });
         setExistingInfo(`已载入「${data.existing.name}」上次提交的内容（${new Date(data.existing.updatedAt).toLocaleString()}），修改后再次提交即可覆盖。`);
+        if (data.existing.workloadPreference === 'more' || data.existing.workloadPreference === 'less') {
+          setWorkloadPreference(data.existing.workloadPreference);
+        } else {
+          setWorkloadPreference('normal');
+        }
+        setMaxAssignments(
+          data.existing.maxAssignments === null || data.existing.maxAssignments === undefined
+            ? ''
+            : String(data.existing.maxAssignments),
+        );
       } catch {
         setMessage({ kind: 'error', text: '网络错误，无法读取上次填写内容' });
       } finally {
@@ -183,6 +252,13 @@ export default function FillForm({
       setMessage({ kind: 'error', text: `有 ${unavailableMissingReason} 处选择“无法排班”但未填写理由` });
       return;
     }
+    if (maxAssignments.trim() !== '') {
+      const parsed = Number(maxAssignments);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1000) {
+        setMessage({ kind: 'error', text: '最多可排班次数应为 0~1000 的整数' });
+        return;
+      }
+    }
 
     setPending(true);
     try {
@@ -191,6 +267,8 @@ export default function FillForm({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: nameSelection?.name ?? name.trim(),
+          workloadPreference,
+          maxAssignments: maxAssignments.trim() === '' ? null : Number(maxAssignments),
           selections: cells.map((cell) => {
             const entry = state[cellKey(cell.date, cell.shiftId)];
             return { date: cell.date, shiftId: cell.shiftId, choice: entry?.choice ?? null, reason: entry?.reason ?? '' };
@@ -279,7 +357,43 @@ export default function FillForm({
       </div>
 
       <div className="card">
-        <div className="card-title">2. 选择排班意愿（{taskName}）</div>
+        <div className="card-title">2. 工作量偏好</div>
+        <p className="hint mb-2">用于自动排班时的优先顺序与上限；不影响你逐格填写的意愿。</p>
+        <div className="flex flex-wrap items-center gap-4">
+          {[
+            { value: 'more', label: '希望多排' },
+            { value: 'normal', label: '正常' },
+            { value: 'less', label: '希望少排' },
+          ].map((option) => (
+            <label key={option.value} className="flex items-center gap-2 text-sm">
+              <input
+                type="radio"
+                name="workloadPreference"
+                value={option.value}
+                checked={workloadPreference === option.value}
+                onChange={() => setWorkloadPreference(option.value as 'more' | 'normal' | 'less')}
+                disabled={locked}
+              />
+              {option.label}
+            </label>
+          ))}
+          <label className="flex items-center gap-2 text-sm">
+            最多可排
+            <input
+              className="input max-w-[90px]"
+              inputMode="numeric"
+              value={maxAssignments}
+              onChange={(event) => setMaxAssignments(event.target.value)}
+              placeholder="不限"
+              disabled={locked}
+            />
+            次
+          </label>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">3. 选择排班意愿（{taskName}）</div>
         {description ? <p className="mb-3 border border-line bg-soft p-2 text-sm">{description}</p> : null}
         <div className="mb-3 border border-line p-2 text-sm">
           <div className="flex flex-wrap items-center gap-3">
@@ -299,6 +413,129 @@ export default function FillForm({
           </div>
         </div>
 
+        <div className="mb-3 border border-line p-2 text-sm no-print">
+          <div className="mb-2 font-bold">批量快速选择</div>
+          <div className="flex flex-wrap items-end gap-2">
+            <div>
+              <label className="label" htmlFor="bulkScope">
+                范围
+              </label>
+              <select
+                id="bulkScope"
+                className="input max-w-[130px]"
+                value={bulkScope}
+                onChange={(event) => setBulkScope(event.target.value as 'all' | 'row' | 'column' | 'range')}
+                disabled={locked}
+              >
+                <option value="all">整个任务</option>
+                <option value="row">某个日期</option>
+                <option value="column">某个班次</option>
+                <option value="range">日期区间</option>
+              </select>
+            </div>
+            {bulkScope === 'row' ? (
+              <div>
+                <label className="label" htmlFor="bulkDate">
+                  日期
+                </label>
+                <select
+                  id="bulkDate"
+                  className="input max-w-[150px]"
+                  value={bulkDate}
+                  onChange={(event) => setBulkDate(event.target.value)}
+                  disabled={locked}
+                >
+                  <option value="">请选择</option>
+                  {dates.map((date) => (
+                    <option key={date} value={date}>
+                      {date}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+            {bulkScope === 'column' ? (
+              <div>
+                <label className="label" htmlFor="bulkShift">
+                  班次
+                </label>
+                <select
+                  id="bulkShift"
+                  className="input max-w-[150px]"
+                  value={bulkShift}
+                  onChange={(event) => setBulkShift(event.target.value)}
+                  disabled={locked}
+                >
+                  <option value="">请选择</option>
+                  {shifts.map((shift) => (
+                    <option key={shift.id} value={shift.id}>
+                      {shift.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+            {bulkScope === 'range' ? (
+              <>
+                <div>
+                  <label className="label" htmlFor="bulkStart">
+                    开始
+                  </label>
+                  <input
+                    id="bulkStart"
+                    type="date"
+                    className="input max-w-[150px]"
+                    value={bulkRangeStart}
+                    onChange={(event) => setBulkRangeStart(event.target.value)}
+                    disabled={locked}
+                  />
+                </div>
+                <div>
+                  <label className="label" htmlFor="bulkEnd">
+                    结束
+                  </label>
+                  <input
+                    id="bulkEnd"
+                    type="date"
+                    className="input max-w-[150px]"
+                    value={bulkRangeEnd}
+                    onChange={(event) => setBulkRangeEnd(event.target.value)}
+                    disabled={locked}
+                  />
+                </div>
+              </>
+            ) : null}
+            <div>
+              <label className="label" htmlFor="bulkReason">
+                统一理由（批量“无法”时必填）
+              </label>
+              <input
+                id="bulkReason"
+                className="input max-w-[220px]"
+                placeholder="如：已有其他安排"
+                value={bulkReason}
+                onChange={(event) => setBulkReason(event.target.value)}
+                disabled={locked}
+              />
+            </div>
+            <div className="flex flex-wrap gap-1">
+              <button type="button" className="btn btn-sm btn-primary" onClick={() => applyBulk('preferred')} disabled={locked}>
+                批量首选
+              </button>
+              <button type="button" className="btn btn-sm" onClick={() => applyBulk('backup')} disabled={locked}>
+                批量次选
+              </button>
+              <button type="button" className="btn btn-sm btn-danger" onClick={() => applyBulk('unavailable')} disabled={locked}>
+                批量无法
+              </button>
+              <button type="button" className="btn btn-sm" onClick={undoBulk} disabled={locked || undoCount === 0}>
+                撤销（{undoCount}）
+              </button>
+            </div>
+          </div>
+          <p className="hint mt-1">批量设置后仍可逐格修改；“无法”需要理由，可用上方统一理由。</p>
+        </div>
+
         <div className="scroll-x">
           <table className="table">
             <thead>
@@ -310,6 +547,36 @@ export default function FillForm({
                     <div className="hint font-normal">
                       {shift.startTime}~{shift.endTime}
                     </div>
+                    <div className="mt-1 flex gap-1 no-print">
+                      <button
+                        type="button"
+                        className="border border-line px-1 text-xs"
+                        onClick={() => {
+                          undoStack.current = [...undoStack.current.slice(-9), state];
+                          setUndoCount(undoStack.current.length);
+                          setState((current) =>
+                            applyBulkChoice(current as Record<string, BulkCellState>, scopeKeys(cells, { type: 'column', shiftId: shift.id }), 'preferred'),
+                          );
+                        }}
+                        disabled={locked}
+                      >
+                        整列首选
+                      </button>
+                      <button
+                        type="button"
+                        className="border border-line px-1 text-xs"
+                        onClick={() => {
+                          undoStack.current = [...undoStack.current.slice(-9), state];
+                          setUndoCount(undoStack.current.length);
+                          setState((current) =>
+                            applyBulkChoice(current as Record<string, BulkCellState>, scopeKeys(cells, { type: 'column', shiftId: shift.id }), 'backup'),
+                          );
+                        }}
+                        disabled={locked}
+                      >
+                        次选
+                      </button>
+                    </div>
                   </th>
                 ))}
               </tr>
@@ -320,6 +587,36 @@ export default function FillForm({
                   <td className="nowrap font-medium">
                     {group.date}
                     <div className="hint font-normal">{weekday(group.date)}</div>
+                    <div className="mt-1 flex gap-1 no-print">
+                      <button
+                        type="button"
+                        className="border border-line px-1 text-xs"
+                        onClick={() => {
+                          undoStack.current = [...undoStack.current.slice(-9), state];
+                          setUndoCount(undoStack.current.length);
+                          setState((current) =>
+                            applyBulkChoice(current as Record<string, BulkCellState>, scopeKeys(cells, { type: 'row', date: group.date }), 'preferred'),
+                          );
+                        }}
+                        disabled={locked}
+                      >
+                        整天首选
+                      </button>
+                      <button
+                        type="button"
+                        className="border border-line px-1 text-xs"
+                        onClick={() => {
+                          undoStack.current = [...undoStack.current.slice(-9), state];
+                          setUndoCount(undoStack.current.length);
+                          setState((current) =>
+                            applyBulkChoice(current as Record<string, BulkCellState>, scopeKeys(cells, { type: 'row', date: group.date }), 'backup'),
+                          );
+                        }}
+                        disabled={locked}
+                      >
+                        次选
+                      </button>
+                    </div>
                   </td>
                   {shifts.map((shift) => {
                     const cell = group.cells.find((item) => item.shift.id === shift.id);

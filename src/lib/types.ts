@@ -27,6 +27,8 @@ export type ScheduleGap = {
   date: string;
   shiftId: string;
   shiftName: string;
+  areaId?: string;
+  areaName?: string;
   required: number;
   filled: number;
   missing: number;
@@ -41,10 +43,13 @@ export type MatchResult = {
     date: string;
     shiftId: string;
     shiftName: string;
+    areaId: string;
+    areaName: string;
     submissionId: string;
     name: string;
     source: 'preferred' | 'backup';
     historyCount: number;
+    multiArea: boolean;
   }>;
   gaps: ScheduleGap[];
   totalRequired: number;

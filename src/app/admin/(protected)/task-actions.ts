@@ -4,145 +4,104 @@ import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import { prisma } from '@/lib/prisma';
 import { requireAdminPage } from '@/lib/auth';
-import { hashPassword, generateFillPassword, validatePasswordStrength } from '@/lib/password';
+import { hashPassword, generateFillPassword } from '@/lib/password';
 import { writeAuditLog } from '@/lib/session';
-import { enumerateDates, isDateString, isTimeString, diffDays } from '@/lib/date-utils';
+import { isDateString, diffDays } from '@/lib/date-utils';
+import { normalizeDraft, generateRequirements } from '@/lib/task-draft';
+import { buildCalendarSnapshot } from '@/lib/calendar-service';
+import { serializeDateRule } from '@/lib/schedule-rules';
 
 export type ActionState = { error?: string; ok?: string };
 
-function readShifts(formData: FormData): Array<{ id: string; name: string; startTime: string; endTime: string; defaultHeadcount: number }> {
-  const count = Number(formData.get('shiftCount') ?? 0);
-  const shifts: Array<{ id: string; name: string; startTime: string; endTime: string; defaultHeadcount: number }> = [];
-  // 表单使用位置下标命名（shiftName_0 / shiftName_1 …），与前端渲染顺序一致。
-  // 只有当整行控件都不存在时才视为“结构不完整”，避免把只填了一半的行静默丢弃。
-  for (let i = 0; i < count; i += 1) {
-    const nameValue = formData.get(`shiftName_${i}`);
-    const startValue = formData.get(`shiftStart_${i}`);
-    const endValue = formData.get(`shiftEnd_${i}`);
-    const headcountValue = formData.get(`shiftHeadcount_${i}`);
-
-    if (nameValue === null && startValue === null && endValue === null && headcountValue === null) {
-      throw new ShiftValidationError(`第 ${i + 1} 个班次的提交数据不完整，请刷新页面后重新填写`);
-    }
-
-    const name = String(nameValue ?? '').trim();
-    const startTime = String(startValue ?? '').trim();
-    const endTime = String(endValue ?? '').trim();
-    const defaultHeadcount = Number(headcountValue ?? 1);
-    if (!name && !startTime && !endTime) continue; // 完全空行忽略
-    shifts.push({
-      id: String(formData.get(`shiftId_${i}`) ?? `s${i}`),
-      name,
-      startTime,
-      endTime,
-      defaultHeadcount: Number.isFinite(defaultHeadcount) && defaultHeadcount > 0 ? Math.floor(defaultHeadcount) : 1,
-    });
-  }
-  return shifts;
-}
-
-/** 表单结构不完整（与普通业务校验错误区分开，便于给出更准确的提示；'use server' 文件只能导出异步函数，故不导出） */
-class ShiftValidationError extends Error {}
-
-function validateShifts(shifts: Array<{ name: string; startTime: string; endTime: string; defaultHeadcount: number }>): string | null {
-  if (shifts.length === 0) return '请至少添加一个班次（需要填写班次名称、开始与结束时间）';
-  if (shifts.length > 20) return '班次数量不能超过 20 个';
-  const names = new Set<string>();
-  for (const shift of shifts) {
-    if (!shift.name) return '班次名称不能为空';
-    if (shift.name.length > 30) return `班次名称过长：${shift.name}`;
-    if (names.has(shift.name)) return `班次名称重复：${shift.name}`;
-    names.add(shift.name);
-    if (!isTimeString(shift.startTime)) return `班次「${shift.name}」开始时间格式应为 HH:mm`;
-    if (!isTimeString(shift.endTime)) return `班次「${shift.name}」结束时间格式应为 HH:mm`;
-    if (shift.defaultHeadcount < 1 || shift.defaultHeadcount > 500) return `班次「${shift.name}」所需人数应在 1~500 之间`;
-  }
-  return null;
-}
-
-/** 创建排班任务（草稿） */
+/** 创建排班任务：接收向导提交的 TaskDraft JSON，服务端权威生成需求 */
 export async function createTaskAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const session = await requireAdminPage();
+  const raw = String(formData.get('draft') ?? '').trim();
+  if (!raw) return { error: '缺少任务草稿数据，请刷新页面后重试' };
+  if (raw.length > 1024 * 1024) return { error: '任务配置过大，请减少日期/班次/区域数量' };
 
-  const name = String(formData.get('name') ?? '').trim();
-  const description = String(formData.get('description') ?? '').trim();
-  const dateStart = String(formData.get('dateStart') ?? '').trim();
-  const dateEnd = String(formData.get('dateEnd') ?? '').trim();
-  const deadlineRaw = String(formData.get('fillDeadline') ?? '').trim();
-  const fillPassword = String(formData.get('fillPassword') ?? '').trim();
-  const allowSameDayMultiple = formData.get('allowSameDayMultiple') === 'on';
-
-  if (!name) return { error: '请填写任务名称' };
-  if (name.length > 100) return { error: '任务名称不能超过 100 个字符' };
-  if (!isDateString(dateStart) || !isDateString(dateEnd)) return { error: '请选择有效的任务日期范围' };
-  if (dateStart > dateEnd) return { error: '开始日期不能晚于结束日期' };
-  if (diffDays(dateStart, dateEnd) > 120) return { error: '日期范围不能超过 120 天' };
-
-  const dates = enumerateDates(dateStart, dateEnd, 200);
-  if (dates.length === 0) return { error: '任务日期范围无效' };
-
-  let shifts: Array<{ id: string; name: string; startTime: string; endTime: string; defaultHeadcount: number }>;
+  let parsed: unknown;
   try {
-    shifts = readShifts(formData);
-  } catch (error) {
-    if (error instanceof ShiftValidationError) return { error: error.message };
-    return { error: '解析班次数据失败，请刷新页面后重试' };
-  }
-  const shiftError = validateShifts(shifts);
-  if (shiftError) return { error: shiftError };
-
-  if (fillPassword && fillPassword.length < 4) return { error: '填写密码至少 4 位' };
-
-  const plainFillPassword = fillPassword || generateFillPassword();
-
-  let fillDeadline: Date | null = null;
-  if (deadlineRaw) {
-    const parsed = new Date(deadlineRaw);
-    if (Number.isNaN(parsed.getTime())) return { error: '填写截止时间格式不正确' };
-    fillDeadline = parsed;
+    parsed = JSON.parse(raw);
+  } catch {
+    return { error: '任务草稿格式错误，请刷新页面后重试' };
   }
 
-  // 每日/每班次需求人数：优先读取矩阵值，缺省使用班次默认人数
-  const requirementRows: Array<{ date: string; shiftIndex: number; headcount: number }> = [];
-  for (let s = 0; s < shifts.length; s += 1) {
-    for (const date of dates) {
-      const raw = formData.get(`req_${s}_${date}`);
-      const value = raw === null ? shifts[s].defaultHeadcount : Number(raw);
-      const headcount = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : shifts[s].defaultHeadcount;
-      requirementRows.push({ date, shiftIndex: s, headcount });
-    }
+  const { draft, errors } = normalizeDraft(parsed);
+  if (errors.length > 0) return { error: errors.slice(0, 6).join('；') };
+
+  const years = [...new Set([Number(draft.dateStart.slice(0, 4)), Number(draft.dateEnd.slice(0, 4))])];
+  const snapshot = await buildCalendarSnapshot(years, {
+    weekend: draft.weekend,
+    manualEntries: draft.calendar?.manualEntries,
+    useApi: draft.calendar?.useApi !== false,
+  });
+
+  const generated = generateRequirements(draft, snapshot.allEntries);
+  if (generated.rows.length === 0) {
+    return { error: generated.warnings[0] ?? '按当前日期规则没有生成任何排班需求，请调整日期或规则' };
   }
+
+  const plainFillPassword = draft.fillPassword || generateFillPassword();
+  const fillDeadline = draft.fillDeadline ? new Date(draft.fillDeadline) : null;
+  if (fillDeadline && Number.isNaN(fillDeadline.getTime())) return { error: '填写截止时间格式不正确' };
 
   const taskId = await prisma.$transaction(async (tx) => {
     const task = await tx.task.create({
       data: {
-        name,
-        description: description || null,
-        dateStart,
-        dateEnd,
+        name: draft.name,
+        description: draft.description || null,
+        dateStart: draft.dateStart,
+        dateEnd: draft.dateEnd,
         fillDeadline,
         fillPasswordHash: await hashPassword(plainFillPassword),
         status: 'draft',
-        allowSameDayMultiple,
+        allowSameDayMultiple: draft.allowSameDayMultiple,
+        areaCoverage: draft.areaCoverage,
+        maxAreasPerPerson: draft.maxAreasPerPerson,
+        lessDefaultMax: draft.lessDefaultMax ?? null,
+        calendarConfig: snapshot.json,
       },
     });
 
-    for (const [index, shift] of shifts.entries()) {
-      const created = await tx.shift.create({
+    for (const [shiftIndex, shift] of draft.shifts.entries()) {
+      const defaultHeadcount = Math.max(1, ...shift.areas.map((area) => area.defaultHeadcount));
+      const createdShift = await tx.shift.create({
         data: {
           taskId: task.id,
           name: shift.name,
           startTime: shift.startTime,
           endTime: shift.endTime,
-          defaultHeadcount: shift.defaultHeadcount,
-          sortOrder: index,
+          defaultHeadcount,
+          sortOrder: shiftIndex,
+          dateRule: serializeDateRule(shift.dateRule),
         },
       });
-      const rows = requirementRows.filter((row) => row.shiftIndex === index);
-      if (rows.length > 0) {
-        await tx.taskDayRequirement.createMany({
-          data: rows.map((row) => ({ taskId: task.id, shiftId: created.id, date: row.date, headcount: row.headcount })),
+      for (const [areaIndex, area] of shift.areas.entries()) {
+        const createdArea = await tx.area.create({
+          data: {
+            taskId: task.id,
+            shiftId: createdShift.id,
+            name: area.name,
+            groupName: area.groupName,
+            defaultHeadcount: area.defaultHeadcount,
+            sortOrder: areaIndex,
+          },
         });
+        const rows = generated.rows.filter(
+          (row) => row.shiftIndex === shiftIndex && row.areaIndex === areaIndex,
+        );
+        if (rows.length > 0) {
+          await tx.taskDayRequirement.createMany({
+            data: rows.map((row) => ({
+              taskId: task.id,
+              shiftId: createdShift.id,
+              areaId: createdArea.id,
+              date: row.date,
+              headcount: row.headcount,
+            })),
+          });
+        }
       }
     }
 
@@ -153,11 +112,15 @@ export async function createTaskAction(_prev: ActionState, formData: FormData): 
     adminId: session.adminId,
     taskId,
     action: 'task.create',
-    detail: `创建任务「${name}」（${dateStart} ~ ${dateEnd}，${shifts.length} 个班次）`,
+    detail: `创建任务「${draft.name}」（${draft.dateStart} ~ ${draft.dateEnd}，${draft.shifts.length} 个班次，${generated.summary.areas} 个区域，需求 ${generated.summary.totalRequired} 人次；日历来源 ${snapshot.calendar.map((item) => item.provider).join('/')}）`,
   });
 
-  // 创建后跳转详情页提示（填写密码不在 URL 中传递，避免写入浏览器历史与访问日志）
   redirect(`/admin/tasks/${taskId}?created=1`);
+}
+
+/** 供普通 <form action> 使用的包装（向导里用 useActionState，新手引导用这个） */
+export async function createTaskFromDraftAction(formData: FormData): Promise<void> {
+  await createTaskAction({}, formData);
 }
 
 /** 更新任务基础信息 */
@@ -182,9 +145,23 @@ export async function updateTaskAction(_prev: ActionState, formData: FormData): 
     fillDeadline = parsed;
   }
 
+  const areaCoverage = formData.get('areaCoverage') === 'exclusive' ? 'exclusive' : 'shared';
+  const maxAreasRaw = Number(formData.get('maxAreasPerPerson') ?? 2);
+  const maxAreasPerPerson = Number.isFinite(maxAreasRaw) ? Math.min(10, Math.max(1, Math.floor(maxAreasRaw))) : 2;
+  const lessMaxRaw = String(formData.get('lessDefaultMax') ?? '').trim();
+  const lessDefaultMax = lessMaxRaw ? Math.max(0, Math.min(365, Math.floor(Number(lessMaxRaw)))) : null;
+
   await prisma.task.update({
     where: { id: taskId },
-    data: { name, description: description || null, fillDeadline, allowSameDayMultiple },
+    data: {
+      name,
+      description: description || null,
+      fillDeadline,
+      allowSameDayMultiple,
+      areaCoverage,
+      maxAreasPerPerson,
+      lessDefaultMax: Number.isNaN(lessDefaultMax as number) ? null : lessDefaultMax,
+    },
   });
 
   await writeAuditLog({

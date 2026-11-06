@@ -19,6 +19,8 @@ export async function GET(request: Request, context: { params: Promise<{ uuid: s
     name: string;
     status: string;
     updatedAt: string;
+    workloadPreference: string;
+    maxAssignments: number | null;
     selections: Array<{ date: string; shiftId: string; choice: string; reason: string | null }>;
   } | null = null;
 
@@ -32,6 +34,8 @@ export async function GET(request: Request, context: { params: Promise<{ uuid: s
         name: submission.name,
         status: submission.status,
         updatedAt: submission.updatedAt.toISOString(),
+        workloadPreference: submission.workloadPreference,
+        maxAssignments: submission.maxAssignments,
         selections: submission.selections.map((selection) => ({
           date: selection.date,
           shiftId: selection.shiftId,

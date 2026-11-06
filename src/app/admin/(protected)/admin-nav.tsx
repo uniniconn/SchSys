@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 const links = [
   { href: '/admin/dashboard', label: '任务列表' },
   { href: '/admin/tasks/new', label: '新建任务' },
+  { href: '/admin/settings/calendar', label: '节假日日历' },
   { href: '/admin/settings/admins', label: '管理员账号' },
   { href: '/admin/settings/password', label: '修改密码' },
 ];

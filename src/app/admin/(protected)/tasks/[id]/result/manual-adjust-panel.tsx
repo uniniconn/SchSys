@@ -16,6 +16,9 @@ export type ManualRow = {
   shiftName: string;
   startTime: string;
   endTime: string;
+  areaId: string;
+  areaName: string;
+  groupName: string;
   headcount: number;
   people: CalendarPerson[];
 };
@@ -30,6 +33,7 @@ type Candidate = {
   reason: string | null;
   assignedHere: boolean;
   sameDayOther: boolean;
+  slotAreas: number;
   eligible: boolean;
 };
 
@@ -70,7 +74,7 @@ export default function ManualAdjustPanel({
   const [messages, setMessages] = useState<Record<string, { kind: 'ok' | 'error' | 'warn'; text: string }>>({});
   const [globalMessage, setGlobalMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
 
-  const rowKey = (row: ManualRow) => `${row.date}|${row.shiftId}`;
+  const rowKey = (row: ManualRow) => `${row.date}|${row.shiftId}|${row.areaId}`;
 
   const setRowMessage = (key: string, message: { kind: 'ok' | 'error' | 'warn'; text: string } | null) => {
     setMessages((current) => {
@@ -87,7 +91,7 @@ export default function ManualAdjustPanel({
     setRowMessage(key, null);
     try {
       const response = await fetch(
-        `/api/admin/tasks/${encodeURIComponent(taskId)}/candidates?date=${encodeURIComponent(row.date)}&shiftId=${encodeURIComponent(row.shiftId)}`,
+        `/api/admin/tasks/${encodeURIComponent(taskId)}/candidates?date=${encodeURIComponent(row.date)}&shiftId=${encodeURIComponent(row.shiftId)}&areaId=${encodeURIComponent(row.areaId)}`,
         { cache: 'no-store' },
       );
       const data = (await response.json()) as { ok?: boolean; error?: string; items?: Candidate[] };
@@ -115,6 +119,7 @@ export default function ManualAdjustPanel({
     formData.set('taskId', taskId);
     formData.set('date', row.date);
     formData.set('shiftId', row.shiftId);
+    formData.set('areaId', row.areaId);
     formData.set('submissionId', submissionId);
     formData.set('note', note[key] ?? '');
     const result = await addManualAssignmentAction({}, formData);
@@ -207,6 +212,7 @@ export default function ManualAdjustPanel({
             <tr>
               <th className="nowrap">日期</th>
               <th className="nowrap">班次</th>
+              <th className="nowrap">区域 / 组</th>
               <th className="nowrap">需求 / 已排</th>
               <th>已安排人员</th>
               <th className="nowrap">操作</th>
@@ -215,8 +221,8 @@ export default function ManualAdjustPanel({
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={5} className="text-ink-soft">
-                  当前任务没有需要排班的「日期 + 班次」。
+                <td colSpan={6} className="text-ink-soft">
+                  当前任务没有需要排班的「日期 + 班次 + 区域」。
                 </td>
               </tr>
             ) : (
@@ -234,6 +240,10 @@ export default function ManualAdjustPanel({
                       <div className="hint">
                         {row.startTime}~{row.endTime}
                       </div>
+                    </td>
+                    <td className="nowrap align-top">
+                      {row.areaName}
+                      <div className="hint">{row.groupName}</div>
                     </td>
                     <td className="nowrap align-top">
                       <span className={row.people.length < row.headcount ? 'text-danger font-bold' : ''}>
@@ -323,7 +333,8 @@ export default function ManualAdjustPanel({
                                   <option key={item.id} value={item.id} disabled={!item.eligible}>
                                     {item.name}
                                     {item.dept ? `（${item.dept}）` : ''} · {CHOICE_LABEL[item.choice]}
-                                    {item.assignedHere ? ' · 已在该班次' : ''}
+                                    {item.assignedHere ? ' · 已在该区域' : ''}
+                                    {!item.assignedHere && item.slotAreas > 0 ? ` · 本时段已兼顾 ${item.slotAreas} 个区域` : ''}
                                     {!item.assignedHere && item.sameDayOther ? ' · 同日已有班次' : ''}
                                     {item.choice === 'unavailable' ? ' · 禁止安排' : ''}
                                   </option>

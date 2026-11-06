@@ -51,6 +51,14 @@ model Task {
   status           String   @default("draft")
   /// 允许同一用户同日多班（仅当班次时间完全不重叠时生效）
   allowSameDayMultiple Boolean @default(false)
+  /// 区域分人模式：shared=同一时段一人可兼顾同组多个区域；exclusive=区域独立分人
+  areaCoverage     String @default("shared")
+  /// shared 模式下每人每时段最多兼顾的区域数
+  maxAreasPerPerson Int   @default(2)
+  /// 日历快照（JSON：条目、来源、抓取时间、自定义），保证历史任务可复现
+  calendarConfig   String?
+  /// 少排偏好的默认上限（可空）
+  lessDefaultMax   Int?
   /// 匹配随机种子
   matchSeed        Int?
   /// 最近一次匹配是否全部满足
@@ -63,6 +71,7 @@ model Task {
   updatedAt        DateTime @updatedAt
 
   shifts       Shift[]
+  areas        Area[]
   requirements TaskDayRequirement[]
   roster       RosterEntry[]
   submissions  Submission[]
@@ -84,11 +93,14 @@ model Shift {
   defaultHeadcount Int  @default(1)
   sortOrder  Int     @default(0)
   colorKey   String? // 展示用（纯色，不使用渐变/透明度）
+  /// 日期规则（JSON：weekdays / eveOfWorkday / excludeHolidays / includeDates / excludeDates）
+  dateRule   String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   task         Task                  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  areas        Area[]
   requirements TaskDayRequirement[]
   selections   Selection[]
   assignments  Assignment[]
@@ -98,11 +110,37 @@ model Shift {
   @@map("shifts")
 }
 
-/// 按天、按班次的需求人数
+/// 区域（属于某个班次/时段；同一时段可多个区域，可归属不同距离组）
+model Area {
+  id               String  @id @default(uuid())
+  taskId           String
+  shiftId          String
+  name             String
+  /// 距离组：同一组内一个人可兼顾多个区域；跨组不允许同时段兼顾
+  groupName        String  @default("默认组")
+  defaultHeadcount Int     @default(1)
+  sortOrder        Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  task         Task                  @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  shift        Shift                 @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  requirements TaskDayRequirement[]
+  assignments  Assignment[]
+
+  @@unique([shiftId, name])
+  @@index([taskId])
+  @@index([taskId, groupName])
+  @@map("areas")
+}
+
+/// 按天、按班次、按区域的需求人数
 model TaskDayRequirement {
   id        String @id @default(uuid())
   taskId    String
   shiftId   String
+  areaId    String
   /// yyyy-MM-dd
   date      String
   headcount Int    @default(1)
@@ -112,9 +150,11 @@ model TaskDayRequirement {
 
   task  Task  @relation(fields: [taskId], references: [id], onDelete: Cascade)
   shift Shift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  area  Area  @relation(fields: [areaId], references: [id], onDelete: Cascade)
 
-  @@unique([taskId, shiftId, date])
+  @@unique([taskId, shiftId, areaId, date])
   @@index([taskId, date])
+  @@index([taskId, areaId])
   @@map("task_day_requirements")
 }
 
@@ -150,6 +190,10 @@ model Submission {
   onRoster     Boolean @default(false)
   /// submitted | locked
   status       String  @default("submitted")
+  /// 工作量偏好：more（希望多排） | normal | less（希望少排）
+  workloadPreference String @default("normal")
+  /// 最多可排班次数（空表示不限制）
+  maxAssignments     Int?
   ipAddress    String?
   userAgent    String?
 
@@ -192,6 +236,7 @@ model Assignment {
   id           String @id @default(uuid())
   taskId       String
   shiftId      String
+  areaId       String
   date         String // yyyy-MM-dd
   submissionId String
   name         String
@@ -211,10 +256,42 @@ model Assignment {
 
   task  Task  @relation(fields: [taskId], references: [id], onDelete: Cascade)
   shift Shift @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  area  Area  @relation(fields: [areaId], references: [id], onDelete: Cascade)
 
+  @@unique([taskId, date, shiftId, areaId, submissionId])
   @@index([taskId, date])
   @@index([taskId, batchId])
+  @@index([taskId, areaId])
   @@map("assignments")
+}
+
+/// 日历缓存（按年份保存从公共 API 获取并规范化后的节假日/调休）
+model CalendarCache {
+  year      Int      @id
+  provider  String
+  dataJson  String
+  papers    String?
+  fetchedAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("calendar_cache")
+}
+
+/// 自定义日历覆盖（优先级高于 API/缓存）
+model CalendarOverride {
+  id        String   @id @default(uuid())
+  year      Int
+  date      String // yyyy-MM-dd
+  /// holiday | workday（workday 表示调休补班）
+  kind      String
+  name      String?
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([year, date])
+  @@index([year])
+  @@map("calendar_overrides")
 }
 
 /// 管理员操作日志

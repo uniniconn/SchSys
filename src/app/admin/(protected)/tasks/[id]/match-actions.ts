@@ -76,7 +76,11 @@ export async function matchTaskAction(_prev: ActionState, formData: FormData): P
 
   const task = await prisma.task.findUnique({
     where: { id: taskId },
-    include: { shifts: { orderBy: { sortOrder: 'asc' } }, requirements: true },
+    include: {
+      shifts: { orderBy: { sortOrder: 'asc' } },
+      areas: { orderBy: { sortOrder: 'asc' } },
+      requirements: true,
+    },
   });
   if (!task) return { error: '任务不存在' };
   if (task.status !== 'confirmed' && task.status !== 'matched') {
@@ -93,6 +97,8 @@ export async function matchTaskAction(_prev: ActionState, formData: FormData): P
       name: true,
       nameKey: true,
       createdAt: true,
+      workloadPreference: true,
+      maxAssignments: true,
       selections: { select: { date: true, shiftId: true, choice: true, reason: true } },
     },
   });
@@ -125,9 +131,13 @@ export async function matchTaskAction(_prev: ActionState, formData: FormData): P
       name: submission.name,
       submittedAt: submission.createdAt,
       historyCount: historyByName.get(submission.nameKey) ?? 0,
+      workloadPreference: submission.workloadPreference as 'more' | 'normal' | 'less',
+      maxAssignments: submission.maxAssignments,
       choices,
     };
   });
+
+  const areaById = new Map(task.areas.map((area) => [area.id, area]));
 
   const result = matchSchedule({
     shifts: task.shifts.map((shift) => ({
@@ -136,13 +146,22 @@ export async function matchTaskAction(_prev: ActionState, formData: FormData): P
       startTime: shift.startTime,
       endTime: shift.endTime,
     })),
-    requirements: task.requirements.map((requirement) => ({
-      date: requirement.date,
-      shiftId: requirement.shiftId,
-      headcount: requirement.headcount,
-    })),
+    requirements: task.requirements.map((requirement) => {
+      const area = areaById.get(requirement.areaId);
+      return {
+        date: requirement.date,
+        shiftId: requirement.shiftId,
+        areaId: requirement.areaId,
+        areaName: area?.name ?? '默认区域',
+        groupName: area?.groupName ?? '默认组',
+        headcount: requirement.headcount,
+      };
+    }),
     submissions: matchSubmissions,
     allowSameDayMultiple: task.allowSameDayMultiple,
+    areaCoverage: task.areaCoverage === 'exclusive' ? 'exclusive' : 'shared',
+    maxAreasPerPerson: task.maxAreasPerPerson,
+    lessDefaultMax: task.lessDefaultMax,
     seed,
   });
 
@@ -153,6 +172,7 @@ export async function matchTaskAction(_prev: ActionState, formData: FormData): P
         data: result.assignments.map((assignment) => ({
           taskId,
           shiftId: assignment.shiftId,
+          areaId: assignment.areaId,
           date: assignment.date,
           submissionId: assignment.submissionId,
           name: assignment.name,

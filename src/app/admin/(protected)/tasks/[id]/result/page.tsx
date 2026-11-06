@@ -30,11 +30,23 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
     endTime: shift.endTime,
     sortOrder: shift.sortOrder,
     defaultHeadcount: shift.defaultHeadcount,
+    areas: task.areas
+      .filter((area) => area.shiftId === shift.id)
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((area) => ({
+        id: area.id,
+        shiftId: area.shiftId,
+        name: area.name,
+        groupName: area.groupName,
+        sortOrder: area.sortOrder,
+        defaultHeadcount: area.defaultHeadcount,
+      })),
   }));
 
   const requirements = task.requirements.map((requirement) => ({
     date: requirement.date,
     shiftId: requirement.shiftId,
+    areaId: requirement.areaId,
     headcount: requirement.headcount,
   }));
 
@@ -42,6 +54,7 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
     id: assignment.id,
     date: assignment.date,
     shiftId: assignment.shiftId,
+    areaId: assignment.areaId,
     name: assignment.name,
     source: assignment.source,
     manual: assignment.manual,
@@ -51,7 +64,6 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
   const calendarRows = buildCalendarRows(shifts, requirements, assignmentLike);
   const nameRows = buildNameRows(shifts, assignmentLike);
 
-  // 缺口以“实际排班结果”为准：手动补齐后缺口会自动减少/消失
   const [gaps, summary] = await Promise.all([
     computeGapsFromAssignments(task.id),
     summarizeTaskResult(task.id),
@@ -112,7 +124,7 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
           <PrintButton />
         </div>
         <p className="hint mt-2">
-          打印时会自动隐藏按钮等操作元素；导出内容包含手动调整后的最终结果（来源列区分“首选 / 次选 / 手动”）。
+          导出内容为手动调整后的最终结果；日历表与姓名表都包含“区域”列。
         </p>
       </div>
 
@@ -120,7 +132,7 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
         <div className="card-title">当前进度</div>
         <div className="grid gap-3 md:grid-cols-4">
           <div className="border border-line p-3">
-            <div className="hint">已安排 / 总需求</div>
+            <div className="hint">已安排 / 总需求（人次）</div>
             <div className="text-2xl font-bold">
               {task.assignments.length} / {summary?.required ?? 0}
             </div>
@@ -134,11 +146,15 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
             <div className="text-sm">
               首选 {summary?.preferred ?? 0} ・ 次选 {summary?.backup ?? 0} ・ 手动 {summary?.manual ?? 0}
             </div>
+            <div className="hint">兼顾多区域 {summary?.multiAreaAssignments ?? 0} 人次</div>
           </div>
           <div className="border border-line p-3">
             <div className="hint">状态</div>
             <div className="text-sm">
               {totalGap === 0 ? <span className="text-ok font-bold">全部满足</span> : <span className="text-danger font-bold">仍存在缺口</span>}
+            </div>
+            <div className="hint">
+              区域：{task.areaCoverage === 'shared' ? '同组可兼顾' : '区域独立分人'}；每人上限 {task.maxAreasPerPerson}
             </div>
           </div>
         </div>
@@ -154,7 +170,7 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
       {gaps.length > 0 ? (
         <div className="card">
           <div className="card-title">
-            缺口报告（{gaps.length} 个“日期+班次”未满足，共缺 {totalGap} 人次）
+            缺口报告（{gaps.length} 个区域需求未满足，共缺 {totalGap} 人次）
           </div>
           <div className="scroll-x">
             <table className="table">
@@ -163,6 +179,7 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
                   <th className="nowrap">日期</th>
                   <th className="nowrap">星期</th>
                   <th className="nowrap">班次</th>
+                  <th className="nowrap">区域</th>
                   <th className="nowrap">需求人数</th>
                   <th className="nowrap">已满足人数</th>
                   <th className="nowrap">缺口人数</th>
@@ -171,10 +188,11 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
               </thead>
               <tbody>
                 {gaps.map((gap) => (
-                  <tr key={`${gap.date}-${gap.shiftId}`}>
+                  <tr key={`${gap.date}-${gap.shiftId}-${gap.areaId}`}>
                     <td className="nowrap">{gap.date}</td>
                     <td className="nowrap">{weekdayLabel(gap.date)}</td>
                     <td className="nowrap">{gap.shiftName}</td>
+                    <td className="nowrap">{gap.areaName}</td>
                     <td className="nowrap">{gap.required}</td>
                     <td className="nowrap">{gap.filled}</td>
                     <td className="nowrap text-danger font-bold">{gap.missing}</td>
@@ -185,15 +203,14 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
             </table>
           </div>
           <p className="hint mt-2">
-            缺口不会强行用「无法排班」的用户填补。可在下方「手动调整排班」中人工补人；也可放宽「允许同日多班」、
-            邀请更多人填写首选/次选，或调整需求人数后重新匹配。
+            缺口不会强行用「无法排班」的用户填补。可在下方「手动调整排班」中人工补人；也可调整区域人数或重新匹配。
           </p>
         </div>
       ) : null}
 
       {calendarRows.length > 0 ? (
         <div className="card">
-          <div className="card-title">一、日历排班表（按日期 × 班次）</div>
+          <div className="card-title">一、日历排班表（按日期 × 班次 × 区域）</div>
           {dates.map((date) => {
             const rows = calendarRows.filter((row) => row.date === date);
             return (
@@ -205,16 +222,21 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
                   <table className="table">
                     <thead>
                       <tr>
-                        <th className="nowrap w-32">班次</th>
-                        <th className="nowrap w-32">时间</th>
-                        <th className="nowrap w-24">需求人数</th>
+                        <th className="nowrap w-28">班次</th>
+                        <th className="nowrap w-28">区域（组）</th>
+                        <th className="nowrap w-28">时间</th>
+                        <th className="nowrap w-20">需求</th>
                         <th>安排人员</th>
                       </tr>
                     </thead>
                     <tbody>
                       {rows.map((row) => (
-                        <tr key={`${row.date}-${row.shiftId}`}>
+                        <tr key={`${row.date}-${row.shiftId}-${row.areaId}`}>
                           <td className="nowrap font-medium">{row.shiftName}</td>
+                          <td className="nowrap">
+                            {row.areaName}
+                            <div className="hint">{row.groupName}</div>
+                          </td>
                           <td className="nowrap">
                             {row.startTime}~{row.endTime}
                           </td>
@@ -225,10 +247,8 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
                             ) : (
                               row.people.map((person) => (
                                 <span
-                                  key={person.assignmentId || `${row.date}-${row.shiftId}-${person.name}`}
-                                  className={`mr-2 inline-block border px-2 py-0.5 ${
-                                    person.manual ? 'border-brand' : 'border-line'
-                                  }`}
+                                  key={person.assignmentId || `${row.date}-${row.shiftId}-${row.areaId}-${person.name}`}
+                                  className={`mr-2 inline-block border px-2 py-0.5 ${person.manual ? 'border-brand' : 'border-line'}`}
                                 >
                                   {person.name}
                                   <span className={`hint ml-1 ${person.manual ? 'text-brand' : ''}`}>
@@ -268,6 +288,9 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
             shiftName: row.shiftName,
             startTime: row.startTime,
             endTime: row.endTime,
+            areaId: row.areaId,
+            areaName: row.areaName,
+            groupName: row.groupName,
             headcount: row.headcount,
             people: row.people,
           }))}
@@ -287,7 +310,8 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
                 <tr>
                   <th className="nowrap w-28">姓名</th>
                   <th className="nowrap w-24">总班次数</th>
-                  <th>日期 / 班次 / 来源</th>
+                  <th className="nowrap w-28">兼顾多区域</th>
+                  <th>日期 / 班次 / 区域 / 来源</th>
                 </tr>
               </thead>
               <tbody>
@@ -295,13 +319,15 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
                   <tr key={row.name}>
                     <td className="nowrap font-medium">{row.name}</td>
                     <td className="nowrap">{row.total}</td>
+                    <td className="nowrap">{row.multiAreaSlots > 0 ? `${row.multiAreaSlots} 个时段` : '-'}</td>
                     <td>
                       {row.entries.map((entry, index) => (
                         <span
-                          key={`${entry.date}-${entry.shiftName}-${index}`}
+                          key={`${entry.date}-${entry.shiftName}-${entry.areaName}-${index}`}
                           className={`mr-2 inline-block border px-2 py-0.5 ${entry.manual ? 'border-brand' : 'border-line'}`}
                         >
-                          {entry.date}（{weekdayLabel(entry.date)}） {entry.shiftName} {entry.startTime}~{entry.endTime}
+                          {entry.date}（{weekdayLabel(entry.date)}） {entry.shiftName} · {entry.areaName}{' '}
+                          {entry.startTime}~{entry.endTime}
                           <span className={`hint ml-1 ${entry.manual ? 'text-brand' : ''}`}>
                             {sourceText(entry.source, entry.manual)}
                           </span>
@@ -324,7 +350,7 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
               <th className="w-48">任务总需求</th>
               <td>
                 {summary?.required ?? 0} 人次（
-                {task.requirements.filter((requirement) => requirement.headcount > 0).length} 个“日期+班次”）
+                {task.requirements.filter((requirement) => requirement.headcount > 0).length} 个“日期+班次+区域”）
               </td>
             </tr>
             <tr>
@@ -333,6 +359,10 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
                 {task.assignments.length} 人次（首选 {summary?.preferred ?? 0} ・ 次选 {summary?.backup ?? 0} ・ 手动{' '}
                 {summary?.manual ?? 0}）
               </td>
+            </tr>
+            <tr>
+              <th>兼顾多区域人次</th>
+              <td>{summary?.multiAreaAssignments ?? 0} 人次</td>
             </tr>
             <tr>
               <th>缺口人次</th>
@@ -349,13 +379,7 @@ export default async function TaskResultPage({ params }: { params: Promise<{ id:
             <tr>
               <th>手动调整</th>
               <td>
-                {manualCount > 0 ? (
-                  <>
-                    {manualCount} 条手动调整记录（重新执行自动匹配会被覆盖）
-                  </>
-                ) : (
-                  '暂无手动调整'
-                )}
+                {manualCount > 0 ? <>{manualCount} 条手动调整记录（重新执行自动匹配会被覆盖）</> : '暂无手动调整'}
               </td>
             </tr>
           </tbody>

@@ -9,6 +9,9 @@ export default function LifecyclePanel({
   taskId,
   status,
   allowSameDayMultiple,
+  areaCoverage = 'shared',
+  maxAreasPerPerson = 2,
+  lessDefaultMax = null,
   matchSeed,
   name,
   description,
@@ -18,6 +21,9 @@ export default function LifecyclePanel({
   taskId: string;
   status: string;
   allowSameDayMultiple: boolean;
+  areaCoverage?: 'shared' | 'exclusive';
+  maxAreasPerPerson?: number;
+  lessDefaultMax?: number | null;
   matchSeed: number | null;
   name: string;
   description: string;
@@ -63,6 +69,43 @@ export default function LifecyclePanel({
               type="datetime-local"
               className="input"
               defaultValue={fillDeadline}
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="taskAreaCoverage">
+              区域分人模式
+            </label>
+            <select id="taskAreaCoverage" name="areaCoverage" className="input" defaultValue={areaCoverage}>
+              <option value="shared">同组可兼顾（一人可覆盖同组多个区域）</option>
+              <option value="exclusive">区域独立分人（同一时段只能一个区域）</option>
+            </select>
+          </div>
+          <div>
+            <label className="label" htmlFor="taskMaxAreas">
+              每人每时段最多兼顾区域数
+            </label>
+            <input
+              id="taskMaxAreas"
+              name="maxAreasPerPerson"
+              type="number"
+              min={1}
+              max={10}
+              className="input"
+              defaultValue={maxAreasPerPerson}
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="taskLessMax">
+              “希望少排”默认上限（可空）
+            </label>
+            <input
+              id="taskLessMax"
+              name="lessDefaultMax"
+              type="number"
+              min={0}
+              max={365}
+              className="input"
+              defaultValue={lessDefaultMax ?? ''}
             />
           </div>
           <div className="flex items-end">

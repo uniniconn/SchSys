@@ -1,4 +1,4 @@
-﻿// =============================================================================
+// =============================================================================
 // 端到端验证脚本（不依赖测试框架）：
 //   node --experimental-strip-types scripts/e2e-test.mjs
 // 覆盖：
@@ -236,31 +236,45 @@ async function main() {
   assert('解析到新建任务表单的 Server Action', newForms.length >= 1, `forms=${newForms.length}`);
   const createForm = newForms[0];
 
-  const createFields = {
+  const baseRule = {
+    weekdays: [0, 1, 2, 3, 4, 5, 6],
+    eveOfWorkday: false,
+    excludeHolidays: false,
+    includeDates: [],
+    excludeDates: [],
+  };
+  const createDraft = {
     name: taskName,
     description: '端到端验证创建的任务',
     dateStart: dates[0],
     dateEnd: dates[1],
     fillDeadline: '2027-05-30T18:00',
     fillPassword: 'e2e-pass-1234',
-    shiftCount: '2',
-    shiftId_0: '0',
-    shiftName_0: '白班',
-    shiftStart_0: '08:00',
-    shiftEnd_0: '16:00',
-    shiftHeadcount_0: '1',
-    shiftId_1: '1',
-    shiftName_1: '夜班',
-    shiftStart_1: '16:00',
-    shiftEnd_1: '23:59',
-    shiftHeadcount_1: '1',
+    allowSameDayMultiple: false,
+    areaCoverage: 'exclusive',
+    maxAreasPerPerson: 1,
+    weekend: [0, 6],
+    calendar: { useApi: false },
+    shifts: [
+      {
+        name: '白班',
+        startTime: '08:00',
+        endTime: '16:00',
+        dateRule: baseRule,
+        areas: [{ name: '默认区域', groupName: '默认组', defaultHeadcount: 1 }],
+      },
+      {
+        name: '夜班',
+        startTime: '16:00',
+        endTime: '23:59',
+        dateRule: baseRule,
+        areas: [{ name: '默认区域', groupName: '默认组', defaultHeadcount: 1 }],
+      },
+    ],
+    overrides: [],
   };
-  createFields[`req_0_${dates[0]}`] = '1';
-  createFields[`req_1_${dates[0]}`] = '1';
-  createFields[`req_0_${dates[1]}`] = '1';
-  createFields[`req_1_${dates[1]}`] = '1';
 
-  const createResult = await submitAction('/admin/tasks/new', createForm, createFields);
+  const createResult = await submitAction('/admin/tasks/new', createForm, { draft: JSON.stringify(createDraft) });
   assert('创建任务请求被接受', [200, 303].includes(createResult.status), `status=${createResult.status}`);
 
   const createdTask = await prisma.task.findFirst({
@@ -548,7 +562,7 @@ async function main() {
   ];
   const baseInput = {
     shifts: [{ id: 'a', name: '白班', startTime: '08:00', endTime: '16:00' }],
-    requirements: [{ date: '2026-06-01', shiftId: 'a', headcount: 2 }],
+    requirements: [{ date: '2026-06-01', shiftId: 'a', areaId: 'ar-a', areaName: 'A 区', groupName: 'G', headcount: 2 }],
     allowSameDayMultiple: false,
     seed: 4242,
   };
@@ -566,13 +580,15 @@ async function main() {
   );
 
   const overlapInput = {
+    areaCoverage: 'exclusive',
+    maxAreasPerPerson: 1,
     shifts: [
       { id: 'a', name: '白班', startTime: '08:00', endTime: '16:00' },
       { id: 'b', name: '夜班', startTime: '16:00', endTime: '23:59' },
     ],
     requirements: [
-      { date: '2026-06-01', shiftId: 'a', headcount: 1 },
-      { date: '2026-06-01', shiftId: 'b', headcount: 1 },
+      { date: '2026-06-01', shiftId: 'a', areaId: 'ar-a', areaName: 'A 区', groupName: 'G', headcount: 1 },
+      { date: '2026-06-01', shiftId: 'b', areaId: 'ar-b', areaName: 'B 区', groupName: 'G', headcount: 1 },
     ],
     submissions: [
       {
@@ -610,20 +626,35 @@ async function main() {
   console.log('\n[10] 缺口报告场景（需求大于可用意愿）');
   const gapTaskName = `E2E 缺口任务 ${stamp}`;
   const gapForms = parseActionForms((await getText('/admin/tasks/new')).text);
-  const gapFields = {
+  const gapDraft = {
     name: gapTaskName,
+    description: '缺口场景',
     dateStart: '2026-07-01',
     dateEnd: '2026-07-01',
     fillPassword: 'gap-pass-1234',
-    shiftCount: '1',
-    shiftId_0: '0',
-    shiftName_0: '全天班',
-    shiftStart_0: '08:00',
-    shiftEnd_0: '20:00',
-    shiftHeadcount_0: '3',
+    allowSameDayMultiple: false,
+    areaCoverage: 'exclusive',
+    maxAreasPerPerson: 1,
+    weekend: [0, 6],
+    calendar: { useApi: false },
+    shifts: [
+      {
+        name: '全天班',
+        startTime: '08:00',
+        endTime: '20:00',
+        dateRule: {
+              weekdays: [0, 1, 2, 3, 4, 5, 6],
+              eveOfWorkday: false,
+              excludeHolidays: false,
+              includeDates: [],
+              excludeDates: [],
+            },
+        areas: [{ name: '默认区域', groupName: '默认组', defaultHeadcount: 3 }],
+      },
+    ],
+    overrides: [],
   };
-  gapFields['req_0_2026-07-01'] = '3';
-  await submitAction('/admin/tasks/new', gapForms[0], gapFields);
+  await submitAction('/admin/tasks/new', gapForms[0], { draft: JSON.stringify(gapDraft) });
 
   const gapTask = await prisma.task.findFirst({ where: { name: gapTaskName } });
   assert('缺口任务已创建', Boolean(gapTask));
@@ -673,38 +704,41 @@ async function main() {
   /* 11. 回归：只有 1 个班次时也能创建（字段位置错位 bug） */
   console.log('\n[11] 回归测试：单班次任务');
   const singleFormHtml = (await getText('/admin/tasks/new')).text;
-  const singleShiftKeys = [...singleFormHtml.matchAll(/name="shiftName_(\d+)"/g)].map((m) => Number(m[1]));
-  const singleCount = Number(singleFormHtml.match(/name="shiftCount" value="(\d+)"/)?.[1] ?? -1);
-  assert(
-    '新建任务表单的班次字段使用连续位置下标',
-    singleShiftKeys.length > 0 && singleShiftKeys.every((value, index) => value === index) && singleCount === singleShiftKeys.length,
-    `shiftName 下标=${JSON.stringify(singleShiftKeys)} shiftCount=${singleCount}`,
-  );
-  assert(
-    '需求单元格字段名与班次下标一致',
-    /name="req_0_/.test(singleFormHtml),
-    singleFormHtml.match(/name="req_\d+_[^"]+"/g)?.slice(0, 2).join(',') ?? '未找到',
-  );
+  assert('新建任务页可解析到表单', parseActionForms(singleFormHtml).length >= 1);
 
   const singleTaskName = `E2E 单班次任务 ${stamp}`;
-  const singleFields = {
+  const singleDraft = {
     name: singleTaskName,
     description: '只有 1 个班次的任务（回归用例）',
     dateStart: '2026-09-01',
     dateEnd: '2026-09-02',
     fillDeadline: '2027-05-30T18:00',
     fillPassword: 'single-pass-1234',
-    shiftCount: '1',
-    shiftId_0: '0',
-    shiftName_0: '全天班',
-    shiftStart_0: '08:00',
-    shiftEnd_0: '20:00',
-    shiftHeadcount_0: '1',
+    allowSameDayMultiple: false,
+    areaCoverage: 'exclusive',
+    maxAreasPerPerson: 1,
+    weekend: [0, 6],
+    calendar: { useApi: false },
+    shifts: [
+      {
+        name: '全天班',
+        startTime: '08:00',
+        endTime: '20:00',
+        dateRule: {
+              weekdays: [0, 1, 2, 3, 4, 5, 6],
+              eveOfWorkday: false,
+              excludeHolidays: false,
+              includeDates: [],
+              excludeDates: [],
+            },
+        areas: [{ name: '默认区域', groupName: '默认组', defaultHeadcount: 1 }],
+      },
+    ],
+    overrides: [],
   };
-  singleFields['req_0_2026-09-01'] = '1';
-  singleFields['req_0_2026-09-02'] = '1';
-
-  const singleCreate = await submitAction('/admin/tasks/new', parseActionForms(singleFormHtml)[0], singleFields);
+  const singleCreate = await submitAction('/admin/tasks/new', parseActionForms(singleFormHtml)[0], {
+    draft: JSON.stringify(singleDraft),
+  });
   assert('单班次：创建请求被接受', [200, 303].includes(singleCreate.status), `status=${singleCreate.status}`);
 
   const singleTask = await prisma.task.findFirst({
@@ -762,8 +796,13 @@ async function main() {
   const taskShifts = await prisma.shift.findMany({ where: { taskId: createdTask.id }, orderBy: { sortOrder: 'asc' } });
   const dayShift = taskShifts.find((shift) => shift.name === '白班');
   const manualDate = dates[0];
+  const dayArea = await prisma.area.findFirst({
+    where: { taskId: createdTask.id, shiftId: dayShift.id },
+    orderBy: { sortOrder: 'asc' },
+  });
+  assert('白班存在可用区域', Boolean(dayArea), dayArea?.name ?? '(无)');
   const beforeManual = await prisma.assignment.count({
-    where: { taskId: createdTask.id, date: manualDate, shiftId: dayShift.id },
+    where: { taskId: createdTask.id, date: manualDate, shiftId: dayShift.id, areaId: dayArea.id },
   });
   assert('手动调整前该班次已排 1 人', beforeManual === 1, `count=${beforeManual}`);
 
@@ -772,7 +811,7 @@ async function main() {
 
   // 动态选一个「该班次尚未安排、且未标记无法排班」的人，作为手动添加对象
   const slotAssignments = await prisma.assignment.findMany({
-    where: { taskId: createdTask.id, date: manualDate, shiftId: dayShift.id },
+    where: { taskId: createdTask.id, date: manualDate, shiftId: dayShift.id, areaId: dayArea.id },
   });
   const slotAssignedIds = new Set(slotAssignments.map((row) => row.submissionId));
   const slotSelections = await prisma.selection.findMany({
@@ -791,6 +830,7 @@ async function main() {
   const addManual = await postJson(`/api/admin/tasks/${createdTask.id}/assignments`, {
     date: manualDate,
     shiftId: dayShift.id,
+    areaId: dayArea.id,
     submissionId: addableSubmission.id,
     note: 'E2E 手动调整',
   });
@@ -798,7 +838,7 @@ async function main() {
   assert('超员时给出提示', /超员/.test(addManual.json?.warning ?? ''), addManual.json?.warning ?? '');
 
   const manualRow = await prisma.assignment.findFirst({
-    where: { taskId: createdTask.id, date: manualDate, shiftId: dayShift.id, submissionId: addableSubmission.id },
+    where: { taskId: createdTask.id, date: manualDate, shiftId: dayShift.id, areaId: dayArea.id, submissionId: addableSubmission.id },
   });
   assert('手动记录被标记（manual=true）', manualRow?.manual === true);
   assert(
@@ -814,7 +854,7 @@ async function main() {
   assert('结果页显示超员提示', resultWithManual.text.includes('超员'));
 
   const candidates = await getJson(
-    `/api/admin/tasks/${createdTask.id}/candidates?date=${manualDate}&shiftId=${dayShift.id}`,
+    `/api/admin/tasks/${createdTask.id}/candidates?date=${manualDate}&shiftId=${dayShift.id}&areaId=${dayArea.id}`,
   );
   assert('候选人接口可用', candidates.status === 200 && Array.isArray(candidates.json?.items));
   assert(
@@ -830,6 +870,7 @@ async function main() {
   const rejectUnavailable = await postJson(`/api/admin/tasks/${createdTask.id}/assignments`, {
     date: manualDate,
     shiftId: dayShift.id,
+    areaId: dayArea.id,
     submissionId: jiaSubmission.id,
   });
   assert(
@@ -841,6 +882,7 @@ async function main() {
   const duplicateManual = await postJson(`/api/admin/tasks/${createdTask.id}/assignments`, {
     date: manualDate,
     shiftId: dayShift.id,
+    areaId: dayArea.id,
     submissionId: addableSubmission.id,
   });
   assert('重复添加同一人员被拒绝', duplicateManual.status === 409, `status=${duplicateManual.status}`);
@@ -851,13 +893,14 @@ async function main() {
   );
   assert('手动移除排班记录成功', removeResponse.status === 200, `status=${removeResponse.status}`);
   const afterRemove = await prisma.assignment.count({
-    where: { taskId: createdTask.id, date: manualDate, shiftId: dayShift.id },
+    where: { taskId: createdTask.id, date: manualDate, shiftId: dayShift.id, areaId: dayArea.id },
   });
   assert('移除后恢复为 1 人', afterRemove === 1, `count=${afterRemove}`);
 
   await postJson(`/api/admin/tasks/${createdTask.id}/assignments`, {
     date: manualDate,
     shiftId: dayShift.id,
+    areaId: dayArea.id,
     submissionId: addableSubmission.id,
     note: '导出验证',
   });
@@ -888,6 +931,7 @@ async function main() {
       const gapAdd = await postJson(`/api/admin/tasks/${gapTaskForManual.id}/assignments`, {
         date: gapRequirement.date,
         shiftId: gapRequirement.shiftId,
+        areaId: gapRequirement.areaId,
         submissionId: gapSubmission.id,
         note: '缺口人工补齐',
       });
@@ -913,7 +957,294 @@ async function main() {
     }
   }
 
-  /* 13. 清理 */
+  /* 13. v1.3 新能力：日历规则、区域匹配、工作量上限、批量选择、草案生成 */
+  console.log('\n[13] v1.3：日历规则、区域匹配、工作量上限、批量选择');
+  const { normalizeHolidayCn, normalizeTimor, normalizeJiejiari } = await import('../src/lib/calendar-api.ts');
+  const { buildCalendarIndex, shiftIncludesDate, normalizeDateRule } = await import('../src/lib/schedule-rules.ts');
+  const { slotGroupDemand } = await import('../src/lib/matching.ts');
+  const { applyBulkChoice, scopeKeys, validateBulk } = await import('../src/lib/bulk-selection.ts');
+  const { normalizeDraft, generateRequirements, createDraftFromTemplate } = await import('../src/lib/task-draft.ts');
+
+  const holidayCn = normalizeHolidayCn(
+    {
+      year: 2026,
+      days: [
+        { name: '国庆节', date: '2026-10-01', isOffDay: true },
+        { name: '国庆后补班', date: '2026-10-10', isOffDay: false },
+      ],
+    },
+    2026,
+  );
+  assert(
+    'holiday-cn 规范化：放假与补班都识别',
+    holidayCn.entries.length === 2 &&
+      holidayCn.entries.some((entry) => entry.date === '2026-10-01' && entry.kind === 'holiday') &&
+      holidayCn.entries.some((entry) => entry.date === '2026-10-10' && entry.kind === 'workday'),
+    JSON.stringify(holidayCn.entries),
+  );
+  const timor = normalizeTimor(
+    { code: 0, holiday: { '10-01': { holiday: true, date: '2026-10-01', name: '国庆' } } },
+    2026,
+  );
+  assert('timor 规范化可用', timor.entries.length === 1 && timor.entries[0].kind === 'holiday');
+  const jiejiari = normalizeJiejiari({ '2026-10-01': { date: '2026-10-01', name: '国庆', isOffDay: true } }, 2026);
+  assert('jiejiari 规范化可用', jiejiari.entries.length === 1 && jiejiari.entries[0].kind === 'holiday');
+
+  const calendarIndex = buildCalendarIndex(
+    [
+      { date: '2026-10-01', kind: 'holiday' },
+      { date: '2026-10-10', kind: 'workday' },
+      { date: '2026-10-11', kind: 'holiday' },
+    ],
+    [0, 6],
+  );
+  const eveningRule = normalizeDateRule({ eveOfWorkday: true });
+  const workdayRule = normalizeDateRule({ weekdays: [1, 2, 3, 4, 5] });
+  assert('晚自习规则：节后周日晚上保留（次日工作日）', shiftIncludesDate('2026-10-11', eveningRule, calendarIndex) === true);
+  assert('晚自习规则：节前晚上不排（次日放假）', shiftIncludesDate('2026-09-30', eveningRule, calendarIndex) === false);
+  assert('调休补班的周六按工作日排', shiftIncludesDate('2026-10-10', workdayRule, calendarIndex) === true);
+  assert('法定节假日不排普通工作日班', shiftIncludesDate('2026-10-01', workdayRule, calendarIndex) === false);
+
+  // 自定义日历优先级：预置缓存 + 覆盖，通过 API 验证
+  const calendarYear = 2031;
+  await prisma.calendarCache.upsert({
+    where: { year: calendarYear },
+    create: {
+      year: calendarYear,
+      provider: 'e2e-cache',
+      dataJson: JSON.stringify([{ date: '2031-01-01', kind: 'holiday', name: '元旦' }]),
+      fetchedAt: new Date(),
+    },
+    update: {
+      provider: 'e2e-cache',
+      dataJson: JSON.stringify([{ date: '2031-01-01', kind: 'holiday', name: '元旦' }]),
+      fetchedAt: new Date(),
+    },
+  });
+  await prisma.calendarOverride.upsert({
+    where: { year_date: { year: calendarYear, date: '2031-01-01' } },
+    create: { year: calendarYear, date: '2031-01-01', kind: 'workday', name: '测试补班' },
+    update: { kind: 'workday', name: '测试补班' },
+  });
+  const calendarApiResponse = await getJson(`/api/admin/calendar?year=${calendarYear}`);
+  const mergedEntry = calendarApiResponse.json?.years?.[0]?.entries?.find((entry) => entry.date === '2031-01-01');
+  assert(
+    '自定义日历优先级高于接口缓存',
+    calendarApiResponse.status === 200 && mergedEntry?.kind === 'workday',
+    JSON.stringify(mergedEntry),
+  );
+  await prisma.calendarOverride.deleteMany({ where: { year: calendarYear } });
+  await prisma.calendarCache.deleteMany({ where: { year: calendarYear } });
+
+  const sharedDemand = slotGroupDemand([{ headcount: 1 }, { headcount: 1 }, { headcount: 1 }], 'shared', 2);
+  const exclusiveDemand = slotGroupDemand([{ headcount: 1 }, { headcount: 1 }, { headcount: 1 }], 'exclusive', 2);
+  assert('shared 时段需求按“每人最多兼顾数”折算', sharedDemand === 2, `demand=${sharedDemand}`);
+  assert('exclusive 时段需求为各区域人数之和', exclusiveDemand === 3, `demand=${exclusiveDemand}`);
+
+  const areaSubmissions = ['甲', '乙', '丙'].map((name) => ({
+    id: `sub-${name}`,
+    name,
+    submittedAt: new Date('2026-01-01'),
+    historyCount: 0,
+    workloadPreference: 'normal',
+    maxAssignments: null,
+    choices: new Map([['2026-12-01|s1', { choice: 'preferred' }]]),
+  }));
+  const areaMatch = matchSchedule({
+    shifts: [{ id: 's1', name: '晚自习', startTime: '18:30', endTime: '21:30' }],
+    requirements: [
+      { date: '2026-12-01', shiftId: 's1', areaId: 'a1', areaName: 'A 区', groupName: 'G1', headcount: 1 },
+      { date: '2026-12-01', shiftId: 's1', areaId: 'a2', areaName: 'B 区', groupName: 'G1', headcount: 1 },
+      { date: '2026-12-01', shiftId: 's1', areaId: 'a3', areaName: 'C 区', groupName: 'G2', headcount: 1 },
+    ],
+    submissions: areaSubmissions,
+    allowSameDayMultiple: false,
+    areaCoverage: 'shared',
+    maxAreasPerPerson: 2,
+    seed: 99,
+  });
+  const areaA = areaMatch.assignments.find((assignment) => assignment.areaId === 'a1');
+  const areaB = areaMatch.assignments.find((assignment) => assignment.areaId === 'a2');
+  const areaC = areaMatch.assignments.find((assignment) => assignment.areaId === 'a3');
+  assert(
+    '同组一人可兼顾多个区域，跨组必须换人',
+    areaMatch.feasible &&
+      areaMatch.assignments.length === 3 &&
+      areaA?.submissionId === areaB?.submissionId &&
+      areaC?.submissionId !== areaA?.submissionId,
+    JSON.stringify(areaMatch.assignments.map((item) => `${item.areaName}:${item.name}`)),
+  );
+  assert(
+    '兼顾多区域的记录被标记（multiArea）',
+    areaA?.multiArea === true && areaB?.multiArea === true && areaC?.multiArea === false,
+  );
+
+  const workloadSubmissions = ['甲', '乙'].map((name) => ({
+    id: `w-${name}`,
+    name,
+    submittedAt: new Date('2026-01-01'),
+    historyCount: 0,
+    workloadPreference: name === '甲' ? 'more' : 'normal',
+    maxAssignments: name === '甲' ? 1 : null,
+    choices: new Map([
+      ['2026-12-01|s1', { choice: 'preferred' }],
+      ['2026-12-02|s1', { choice: 'preferred' }],
+    ]),
+  }));
+  const cappedMatch = matchSchedule({
+    shifts: [{ id: 's1', name: '晚自习', startTime: '18:30', endTime: '21:30' }],
+    requirements: [
+      { date: '2026-12-01', shiftId: 's1', areaId: 'a1', areaName: 'A 区', groupName: 'G', headcount: 1 },
+      { date: '2026-12-02', shiftId: 's1', areaId: 'a1', areaName: 'A 区', groupName: 'G', headcount: 1 },
+    ],
+    submissions: workloadSubmissions,
+    allowSameDayMultiple: false,
+    areaCoverage: 'shared',
+    maxAreasPerPerson: 1,
+    seed: 7,
+  });
+  assert(
+    '“希望多排”优先，但 maxAssignments 硬上限生效',
+    cappedMatch.feasible &&
+      cappedMatch.assignments.filter((assignment) => assignment.name === '甲').length === 1 &&
+      cappedMatch.assignments.filter((assignment) => assignment.name === '乙').length === 1,
+    JSON.stringify(cappedMatch.assignments.map((item) => `${item.date}:${item.name}`)),
+  );
+
+  const bulkCells = [
+    { date: '2026-12-01', shiftId: 's1' },
+    { date: '2026-12-01', shiftId: 's2' },
+    { date: '2026-12-02', shiftId: 's1' },
+  ];
+  assert(
+    '批量范围：整行/整列/日期区间',
+    scopeKeys(bulkCells, { type: 'row', date: '2026-12-01' }).length === 2 &&
+      scopeKeys(bulkCells, { type: 'column', shiftId: 's1' }).length === 2 &&
+      scopeKeys(bulkCells, { type: 'range', dateStart: '2026-12-01', dateEnd: '2026-12-01' }).length === 2,
+  );
+  const bulkApplied = applyBulkChoice({}, ['d1|s1', 'd1|s2'], 'unavailable', '已有安排');
+  assert(
+    '批量“无法”统一理由，改首选后理由清空',
+    bulkApplied['d1|s1'].choice === 'unavailable' &&
+      bulkApplied['d1|s1'].reason === '已有安排' &&
+      applyBulkChoice(bulkApplied, ['d1|s1'], 'preferred')['d1|s1'].reason === '',
+  );
+  assert('批量“无法”缺少理由被拒绝', Boolean(validateBulk('unavailable', '')));
+
+  const sampleDraft = createDraftFromTemplate('blank');
+  sampleDraft.name = '草案生成测试';
+  sampleDraft.dateStart = '2026-12-01';
+  sampleDraft.dateEnd = '2026-12-02';
+  sampleDraft.shifts[0].dateRule = normalizeDateRule({
+    weekdays: [0, 1, 2, 3, 4, 5, 6],
+    excludeHolidays: false,
+  });
+  sampleDraft.shifts[0].areas = [
+    { name: 'A 区', groupName: 'G', defaultHeadcount: 1 },
+    { name: 'B 区', groupName: 'G', defaultHeadcount: 1 },
+  ];
+  sampleDraft.overrides = [{ date: '2026-12-01', shiftIndex: 0, areaIndex: 0, headcount: 3 }];
+  const sampleNormalized = normalizeDraft(sampleDraft);
+  const sampleGenerated = generateRequirements(sampleNormalized.draft, []);
+  assert(
+    '草稿可生成区域需求，稀疏覆盖生效',
+    sampleNormalized.errors.length === 0 &&
+      sampleGenerated.rows.length === 4 &&
+      sampleGenerated.summary.totalRequired === 6,
+    `rows=${sampleGenerated.rows.length} total=${sampleGenerated.summary.totalRequired}`,
+  );
+  assert('缺少任务名称会被校验拦截', normalizeDraft({}).errors.includes('请填写任务名称'));
+
+  /* 13b. 多区域任务全链路 */
+  console.log('\n[13b] 多区域任务：创建 → 填写 → 匹配 → 结果');
+  const areaTaskName = `E2E 多区域任务 ${stamp}`;
+  const areaDraft = {
+    name: areaTaskName,
+    description: '三个人、三个区域、同组兼顾',
+    dateStart: '2026-12-01',
+    dateEnd: '2026-12-02',
+    fillPassword: 'area-pass-1234',
+    allowSameDayMultiple: false,
+    areaCoverage: 'shared',
+    maxAreasPerPerson: 2,
+    weekend: [0, 6],
+    calendar: { useApi: false },
+    shifts: [
+      {
+        name: '晚自习',
+        startTime: '18:30',
+        endTime: '21:30',
+        dateRule: {
+          weekdays: [0, 1, 2, 3, 4, 5, 6],
+          eveOfWorkday: false,
+          excludeHolidays: false,
+          includeDates: [],
+          excludeDates: [],
+        },
+        areas: [
+          { name: 'A 区', groupName: 'G1', defaultHeadcount: 1 },
+          { name: 'B 区', groupName: 'G1', defaultHeadcount: 1 },
+          { name: 'C 区', groupName: 'G2', defaultHeadcount: 1 },
+        ],
+      },
+    ],
+    overrides: [],
+  };
+  const areaForm = parseActionForms((await getText('/admin/tasks/new')).text)[0];
+  await submitAction('/admin/tasks/new', areaForm, { draft: JSON.stringify(areaDraft) });
+  const areaTask = await prisma.task.findFirst({
+    where: { name: areaTaskName },
+    include: { shifts: { include: { areas: true } }, requirements: true },
+  });
+  assert(
+    '多区域任务已创建（3 个区域 6 条需求）',
+    Boolean(areaTask) && areaTask.shifts[0]?.areas?.length === 3 && areaTask.requirements.length === 6,
+    `areas=${areaTask?.shifts?.[0]?.areas?.length} req=${areaTask?.requirements?.length}`,
+  );
+  if (areaTask) {
+    createdTaskIds.push(areaTask.id);
+    let areaForms = parseActionForms((await getText(`/admin/tasks/${areaTask.id}`)).text);
+    await submitAction(`/admin/tasks/${areaTask.id}`, findActionByName(areaForms, 'publish'), {
+      taskId: areaTask.id,
+      fillPassword: 'area-pass-1234',
+    });
+    const areaPublished = await prisma.task.findUnique({ where: { id: areaTask.id } });
+    await postJson(`/api/fill/${areaPublished.publicToken}/auth`, { password: 'area-pass-1234' });
+    for (const person of ['甲', '乙', '丙']) {
+      const areaCells = (await getJson(`/api/fill/${areaPublished.publicToken}/task`)).json.task.cells;
+      await postJson(`/api/fill/${areaPublished.publicToken}/submit`, {
+        name: person,
+        selections: areaCells.map((cell) => ({ date: cell.date, shiftId: cell.shiftId, choice: 'preferred' })),
+      });
+    }
+    areaForms = parseActionForms((await getText(`/admin/tasks/${areaTask.id}`)).text);
+    await submitAction(`/admin/tasks/${areaTask.id}`, findActionByName(areaForms, 'confirm'), { taskId: areaTask.id });
+    areaForms = parseActionForms((await getText(`/admin/tasks/${areaTask.id}`)).text);
+    await submitAction(`/admin/tasks/${areaTask.id}`, findActionByName(areaForms, 'match'), {
+      taskId: areaTask.id,
+      seed: '4242',
+    });
+    const areaAfter = await prisma.task.findUnique({
+      where: { id: areaTask.id },
+      include: { assignments: { include: { area: true } } },
+    });
+    assert(
+      '多区域任务匹配出 6 条区域安排',
+      areaAfter.matchFeasible === true && areaAfter.assignments.length === 6,
+      `feasible=${areaAfter.matchFeasible} assignments=${areaAfter.assignments.length}`,
+    );
+    const multiAreaRows = areaAfter.assignments.filter(
+      (row) =>
+        areaAfter.assignments.filter(
+          (other) => other.date === row.date && other.shiftId === row.shiftId && other.submissionId === row.submissionId,
+        ).length > 1,
+    );
+    assert('多区域结果中有人兼顾同组两个区域', multiAreaRows.length >= 2, `rows=${areaAfter.assignments.length} multi=${multiAreaRows.length}`);
+    const areaResultPage = await getText(`/admin/tasks/${areaTask.id}/result`);
+    assert('结果页按区域展示排班', areaResultPage.text.includes('区域（组）') && areaResultPage.text.includes('A 区'));
+  }
+
+  /* 14. 清理 */
   console.log('\n[13] 清理测试数据');
   for (const id of createdTaskIds) {
     await prisma.task.delete({ where: { id } }).catch(() => {});

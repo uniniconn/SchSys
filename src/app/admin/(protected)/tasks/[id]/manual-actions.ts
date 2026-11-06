@@ -26,6 +26,7 @@ export async function addManualAssignmentAction(_prev: ActionState, formData: Fo
     taskId,
     date: String(formData.get('date') ?? '').trim(),
     shiftId: String(formData.get('shiftId') ?? '').trim(),
+    areaId: String(formData.get('areaId') ?? '').trim(),
     submissionId: String(formData.get('submissionId') ?? '').trim(),
     note: String(formData.get('note') ?? ''),
     adminId: session.adminId,

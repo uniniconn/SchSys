@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { formatDateTime } from '@/lib/date-utils';
 import { TASK_STATUS_LABEL } from '@/lib/types';
 import { requireAdminPage } from '@/lib/auth';
+import OnboardingCard from './onboarding-card';
 
 export const metadata = { title: '任务列表 - 排班系统' };
 
@@ -26,6 +27,7 @@ export default async function DashboardPage() {
 
   return (
     <div className="space-y-4">
+      <OnboardingCard />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-lg font-bold">排班任务</h1>
         <Link className="btn btn-primary" href="/admin/tasks/new">

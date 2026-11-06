@@ -37,6 +37,7 @@ export default async function TaskDetailPage({
     where: { id },
     include: {
       shifts: { orderBy: { sortOrder: 'asc' } },
+      areas: { orderBy: { sortOrder: 'asc' } },
       requirements: true,
       roster: { orderBy: { createdAt: 'asc' } },
       auditLogs: { orderBy: { createdAt: 'desc' }, take: 20, include: { admin: { select: { username: true } } } },
@@ -53,7 +54,17 @@ export default async function TaskDetailPage({
 
   const assignments = await prisma.assignment.findMany({
     where: { taskId: task.id },
-    select: { id: true, date: true, shiftId: true, name: true, source: true, manual: true, note: true },
+    select: {
+      id: true,
+      date: true,
+      shiftId: true,
+      areaId: true,
+      name: true,
+      source: true,
+      manual: true,
+      note: true,
+      area: { select: { name: true } },
+    },
     orderBy: [{ date: 'asc' }, { createdAt: 'asc' }],
   });
 
@@ -85,6 +96,7 @@ export default async function TaskDetailPage({
           <p className="hint">
             {task.dateStart} ~ {task.dateEnd} ・{' '}
             <span className="badge">{TASK_STATUS_LABEL[task.status] ?? task.status}</span> ・ 班次 {task.shifts.length} 个 ・
+            区域 {task.areas.length} 个 ・
             总需求 {requirementTotal} 人次
           </p>
         </div>
@@ -105,6 +117,27 @@ export default async function TaskDetailPage({
           任务已创建为草稿。请在下方「填写链接与密码」中发布任务并设置填写密码，然后把链接和密码发给需要填写的人。
         </div>
       ) : null}
+
+      <div className="alert alert-info">
+        <strong>下一步：</strong>
+        {task.status === 'draft' ? (
+          <>在下方「填写链接与密码」中点击发布，复制链接与密码发给填写人。</>
+        ) : task.status === 'published' ? (
+          <>把填写链接与密码发给填写人；收齐后点击「截止并确认」，再执行自动匹配。</>
+        ) : task.status === 'confirmed' ? (
+          <>已截止确认，请在「截止确认与自动匹配」中点击「自动匹配排班」。</>
+        ) : task.status === 'matched' ? (
+          <>
+            已生成排班结果。
+            <Link className="underline" href={`/admin/tasks/${task.id}/result`}>
+              查看结果与导出
+            </Link>
+            ，或到结果页做手动调整。
+          </>
+        ) : (
+          <>任务已归档，如需修改可先恢复为已匹配状态（如界面提供）。</>
+        )}
+      </div>
 
       <FillLinkPanel
         taskId={task.id}
@@ -154,13 +187,15 @@ export default async function TaskDetailPage({
                 <th className="nowrap">首选</th>
                 <th className="nowrap">次选</th>
                 <th className="nowrap">无法</th>
+                <th className="nowrap">工作量</th>
+                <th className="nowrap">上限</th>
                 <th className="nowrap">最近提交</th>
               </tr>
             </thead>
             <tbody>
               {summaries.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="text-ink-soft">
+                  <td colSpan={10} className="text-ink-soft">
                     还没有人提交。
                   </td>
                 </tr>
@@ -176,6 +211,10 @@ export default async function TaskDetailPage({
                     <td className="nowrap">{item.preferredCount}</td>
                     <td className="nowrap">{item.backupCount}</td>
                     <td className="nowrap">{item.unavailableCount}</td>
+                    <td className="nowrap">
+                      {item.workloadPreference === 'more' ? '希望多排' : item.workloadPreference === 'less' ? '希望少排' : '正常'}
+                    </td>
+                    <td className="nowrap">{item.maxAssignments ?? '-'}</td>
                     <td className="nowrap">{formatDateTime(item.updatedAt)}</td>
                   </tr>
                 ))
@@ -296,6 +335,9 @@ export default async function TaskDetailPage({
         taskId={task.id}
         status={task.status}
         allowSameDayMultiple={task.allowSameDayMultiple}
+        areaCoverage={task.areaCoverage === 'exclusive' ? 'exclusive' : 'shared'}
+        maxAreasPerPerson={task.maxAreasPerPerson}
+        lessDefaultMax={task.lessDefaultMax}
         matchSeed={task.matchSeed}
         name={task.name}
         description={task.description ?? ''}
@@ -321,6 +363,7 @@ export default async function TaskDetailPage({
                 <tr>
                   <th className="nowrap">日期</th>
                   <th className="nowrap">班次</th>
+                  <th className="nowrap">区域</th>
                   <th className="nowrap">人员</th>
                   <th className="nowrap">来源</th>
                   <th className="nowrap">说明</th>
@@ -331,6 +374,7 @@ export default async function TaskDetailPage({
                   <tr key={assignment.id}>
                     <td className="nowrap">{assignment.date}</td>
                     <td className="nowrap">{task.shifts.find((shift) => shift.id === assignment.shiftId)?.name ?? '-'}</td>
+                    <td className="nowrap">{assignment.area?.name ?? '-'}</td>
                     <td className="nowrap">{assignment.name}</td>
                     <td className="nowrap">
                       {assignment.manual ? (
@@ -373,6 +417,7 @@ export default async function TaskDetailPage({
               <tr>
                 <th className="nowrap">班次</th>
                 <th className="nowrap">时间</th>
+                <th className="nowrap">区域（组/人数）</th>
                 <th className="nowrap">默认人数</th>
                 <th className="nowrap">需要该班次的日期数</th>
                 <th className="nowrap">合计需求</th>
@@ -381,11 +426,22 @@ export default async function TaskDetailPage({
             <tbody>
               {task.shifts.map((shift) => {
                 const rows = task.requirements.filter((requirement) => requirement.shiftId === shift.id);
+                const shiftAreas = task.areas.filter((area) => area.shiftId === shift.id);
                 return (
                   <tr key={shift.id}>
                     <td className="nowrap font-medium">{shift.name}</td>
                     <td className="nowrap">
                       {shift.startTime} ~ {shift.endTime}
+                    </td>
+                    <td>
+                      {shiftAreas.map((area) => (
+                        <span key={area.id} className="mr-2 inline-block border border-line px-1 py-0.5 text-xs">
+                          {area.name}
+                          <span className="hint ml-1">
+                            {area.groupName} / {area.defaultHeadcount} 人
+                          </span>
+                        </span>
+                      ))}
                     </td>
                     <td className="nowrap">{shift.defaultHeadcount}</td>
                     <td className="nowrap">{rows.filter((row) => row.headcount > 0).length}</td>

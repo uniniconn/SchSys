@@ -17,7 +17,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (!session) return fail('未登录或会话已过期', 401);
 
   const { id } = await context.params;
-  let body: { date?: string; shiftId?: string; submissionId?: string; note?: string };
+  let body: { date?: string; shiftId?: string; areaId?: string; submissionId?: string; note?: string };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -28,6 +28,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     taskId: id,
     date: (body.date ?? '').trim(),
     shiftId: (body.shiftId ?? '').trim(),
+    areaId: (body.areaId ?? '').trim(),
     submissionId: (body.submissionId ?? '').trim(),
     note: body.note ?? '',
     adminId: session.adminId,

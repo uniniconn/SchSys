@@ -13,6 +13,8 @@ export type SubmissionSummary = {
   preferredCount: number;
   backupCount: number;
   unavailableCount: number;
+  workloadPreference: string;
+  maxAssignments: number | null;
 };
 
 export type RosterComparison = {
@@ -47,6 +49,8 @@ export async function getSubmissionSummaries(taskId: string): Promise<Submission
       status: true,
       createdAt: true,
       updatedAt: true,
+      workloadPreference: true,
+      maxAssignments: true,
       selections: { select: { choice: true } },
     },
   });
@@ -63,6 +67,8 @@ export async function getSubmissionSummaries(taskId: string): Promise<Submission
     preferredCount: submission.selections.filter((s) => s.choice === 'preferred').length,
     backupCount: submission.selections.filter((s) => s.choice === 'backup').length,
     unavailableCount: submission.selections.filter((s) => s.choice === 'unavailable').length,
+    workloadPreference: submission.workloadPreference,
+    maxAssignments: submission.maxAssignments,
   }));
 }
 

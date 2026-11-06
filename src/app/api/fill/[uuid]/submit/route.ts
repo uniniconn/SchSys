@@ -30,11 +30,20 @@ export async function POST(request: Request, context: { params: Promise<{ uuid: 
   const locked = fillLocked(task);
   if (locked.locked) return fail(locked.reason ?? '当前不可提交', 403);
 
-  let body: { name?: string; selections?: SelectionPayload[] };
+  let body: { name?: string; selections?: SelectionPayload[]; workloadPreference?: string; maxAssignments?: number | string | null };
   try {
-    body = (await request.json()) as { name?: string; selections?: SelectionPayload[] };
+    body = (await request.json()) as typeof body;
   } catch {
     return fail('请求格式错误');
+  }
+
+  const workloadPreference =
+    body.workloadPreference === 'more' || body.workloadPreference === 'less' ? body.workloadPreference : 'normal';
+  let maxAssignments: number | null = null;
+  if (body.maxAssignments !== null && body.maxAssignments !== undefined && String(body.maxAssignments).trim() !== '') {
+    const parsed = Number(body.maxAssignments);
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1000) return fail('最多可排班次数应在 0~1000 之间', 422);
+    maxAssignments = Math.floor(parsed);
   }
 
   const name = (body.name ?? '').trim();
@@ -104,6 +113,8 @@ export async function POST(request: Request, context: { params: Promise<{ uuid: 
             dept: rosterEntry?.dept ?? existing.dept,
             onRoster: Boolean(rosterEntry),
             status: 'submitted',
+            workloadPreference,
+            maxAssignments,
             ipAddress: ip,
             userAgent: request.headers.get('user-agent')?.slice(0, 200) ?? null,
           },
@@ -117,6 +128,8 @@ export async function POST(request: Request, context: { params: Promise<{ uuid: 
             dept: rosterEntry?.dept ?? null,
             onRoster: Boolean(rosterEntry),
             status: 'submitted',
+            workloadPreference,
+            maxAssignments,
             ipAddress: ip,
             userAgent: request.headers.get('user-agent')?.slice(0, 200) ?? null,
           },

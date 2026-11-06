@@ -16,6 +16,7 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     taskId: id,
     date: (params.get('date') ?? '').trim(),
     shiftId: (params.get('shiftId') ?? '').trim(),
+    areaId: (params.get('areaId') ?? '').trim(),
   });
 
   if ('error' in result) return fail(result.error, result.status);
